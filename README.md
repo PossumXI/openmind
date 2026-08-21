@@ -62,7 +62,23 @@ The agent reaches the answer in fewer turns with less context, because the prior
 
 ## Quick start
 
-One command, all your agents:
+One command, all your agents.
+
+**macOS / Linux**
+
+```bash
+curl -fsSL https://deeplake.ai/hivemind.sh | sh
+```
+
+**Windows** — in PowerShell:
+
+```powershell
+irm https://deeplake.ai/hivemind.ps1 | iex
+```
+
+**Any platform, via npm** — for CI and Dockerfiles, or where policy blocks
+piping a downloaded script to a shell. Skips the checks the installers do, so
+Node 22+ and a writable npm prefix are on you:
 
 ```bash
 npm i -g @deeplake/hivemind && hivemind install

@@ -76,14 +76,6 @@ curl -fsSL https://deeplake.ai/hivemind.sh | sh
 irm https://deeplake.ai/hivemind.ps1 | iex
 ```
 
-`iex` evaluates the downloaded text and has nowhere to put arguments, so
-installing for one assistant means building a script block rather than
-appending flags:
-
-```powershell
-& ([scriptblock]::Create((irm https://deeplake.ai/hivemind.ps1))) claude install
-```
-
 **Any platform, via npm** — for CI and Dockerfiles, or where policy blocks
 piping a downloaded script to a shell. Skips the checks the installers do, so
 Node 22+ and a writable npm prefix are on you:

@@ -28,7 +28,13 @@ describe("device-flow login opens a browser on Windows", () => {
   // divergent implementation — which is exactly how this shipped. Assert the
   // caller actually routes through the shared helper.
   it("auth.ts delegates to the shared helper instead of building its own command", () => {
-    expect(AUTH_SRC).toContain("openInBrowser");
+    // Match the import and the call, not the bare name: the explanation of this
+    // bug lives in a comment in auth.ts, so a substring check for
+    // "openInBrowser" would pass on a file that only talks about it.
+    expect(AUTH_SRC).toMatch(
+      /import\s*\{\s*openInBrowser\s*\}\s*from\s*["']\.\.\/dashboard\/open\.js["']/,
+    );
+    expect(AUTH_SRC).toMatch(/return\s+openInBrowser\(\s*url\s*\)\s*\.attempted/);
     expect(AUTH_SRC).not.toMatch(/start\s+"\$\{url\}"/);
     expect(AUTH_SRC).not.toMatch(/execSync\(\s*cmd/);
   });

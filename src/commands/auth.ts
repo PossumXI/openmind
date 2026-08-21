@@ -3,9 +3,9 @@
  * and org/workspace management.
  */
 
-import { execSync } from "node:child_process";
 import { deeplakeClientHeader } from "../utils/client-header.js";
 import { hivemindInstallIDHeader } from "./install-id.js";
+import { openInBrowser } from "../dashboard/open.js";
 import {
   type Credentials,
   loadCredentials,
@@ -148,16 +148,23 @@ export async function pollForToken(deviceCode: string, apiUrl = DEFAULT_API_URL)
   throw new Error(`Token polling failed: HTTP ${resp.status}`);
 }
 
+/**
+ * Opens the device-flow URL, via the shared helper in dashboard/open.ts.
+ *
+ * This used to build its own shell string, and got Windows wrong in the one
+ * way open.ts already documents: `start "<url>"` under cmd.exe treats its
+ * first quoted argument as the WINDOW TITLE, so it opened a new console
+ * titled with the URL and never opened a browser. openCommandFor passes the
+ * empty title (`cmd /c start "" <url>`) that makes the URL an argument.
+ *
+ * The old version also could not report that honestly: `start "<url>"`
+ * *succeeds*, so execSync did not throw, so it returned true and the CLI
+ * printed "Browser opened. Waiting for sign in..." to someone staring at a
+ * shell. openInBrowser pre-checks the helper is on PATH and reports what it
+ * actually attempted.
+ */
 function openBrowser(url: string): boolean {
-  try {
-    const cmd = process.platform === "darwin" ? `open "${url}"`
-      : process.platform === "win32" ? `start "${url}"`
-      : `xdg-open "${url}" 2>/dev/null`;
-    execSync(cmd, { stdio: "ignore", timeout: 5000 });
-    return true;
-  } catch {
-    return false;
-  }
+  return openInBrowser(url).attempted;
 }
 
 export async function deviceFlowLogin(apiUrl = DEFAULT_API_URL, ref?: string): Promise<{ token: string; expiresIn: number }> {

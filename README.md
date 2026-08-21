@@ -84,7 +84,9 @@ appending flags:
 & ([scriptblock]::Create((irm https://deeplake.ai/hivemind.ps1))) claude install
 ```
 
-**Already have npm** — any platform:
+**Any platform, via npm** — for CI and Dockerfiles, or where policy blocks
+piping a downloaded script to a shell. Skips the checks the installers do, so
+Node 22+ and a writable npm prefix are on you:
 
 ```bash
 npm i -g @deeplake/hivemind && hivemind install

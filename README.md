@@ -62,7 +62,29 @@ The agent reaches the answer in fewer turns with less context, because the prior
 
 ## Quick start
 
-One command, all your agents:
+One command, all your agents.
+
+**macOS / Linux**
+
+```bash
+curl -fsSL https://deeplake.ai/hivemind.sh | sh
+```
+
+**Windows** — in PowerShell:
+
+```powershell
+irm https://deeplake.ai/hivemind.ps1 | iex
+```
+
+`iex` evaluates the downloaded text and has nowhere to put arguments, so
+installing for one assistant means building a script block rather than
+appending flags:
+
+```powershell
+& ([scriptblock]::Create((irm https://deeplake.ai/hivemind.ps1))) claude install
+```
+
+**Already have npm** — any platform:
 
 ```bash
 npm i -g @deeplake/hivemind && hivemind install

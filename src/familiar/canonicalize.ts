@@ -11,28 +11,18 @@ export class FamiliarCanonicalizationError extends Error {
 function canonicalizeValue(value: unknown, seen: Set<object>, path: string): string {
   if (value === null) return "null";
 
-  switch (typeof value) {
-    case "string":
-      return JSON.stringify(value);
-    case "boolean":
-      return value ? "true" : "false";
-    case "number":
-      if (!Number.isFinite(value)) {
-        throw new FamiliarCanonicalizationError(`${path}: non-finite numbers are not canonicalizable`);
-      }
-      // JSON uses 0 for -0; make that behavior explicit and deterministic.
-      return Object.is(value, -0) ? "0" : JSON.stringify(value);
-    case "undefined":
-    case "function":
-    case "symbol":
-    case "bigint":
-      throw new FamiliarCanonicalizationError(`${path}: unsupported value type ${typeof value}`);
-    case "object":
-      break;
-    default: {
-      const neverType: never = typeof value;
-      throw new FamiliarCanonicalizationError(`${path}: unsupported value type ${String(neverType)}`);
+  const valueType = typeof value;
+  if (valueType === "string") return JSON.stringify(value);
+  if (valueType === "boolean") return value ? "true" : "false";
+  if (valueType === "number") {
+    if (!Number.isFinite(value)) {
+      throw new FamiliarCanonicalizationError(`${path}: non-finite numbers are not canonicalizable`);
     }
+    // JSON uses 0 for -0; make that behavior explicit and deterministic.
+    return Object.is(value, -0) ? "0" : JSON.stringify(value);
+  }
+  if (valueType !== "object") {
+    throw new FamiliarCanonicalizationError(`${path}: unsupported value type ${valueType}`);
   }
 
   const objectValue = value as object;

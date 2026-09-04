@@ -27,8 +27,16 @@ export interface FamiliarMemoryConsoleItemV1 {
   contentDigest: Digest;
   originLabelDigest: Digest;
   sourceDigests: Digest[];
-  mutationCount: number;
-  influencedContextReceiptDigests: Digest[];
+  /**
+   * Derived projection. Omitted means the transport did not provide a verified
+   * mutation count; omission must not be rendered as zero.
+   */
+  mutationCount?: number;
+  /**
+   * Derived projection. Omitted means influence receipts were not supplied by
+   * the transport; omission must not be rendered as an empty/clean set.
+   */
+  influencedContextReceiptDigests?: Digest[];
   createdAt: string;
 }
 
@@ -84,6 +92,10 @@ function ensureScope(
   if (artifact.tenantId !== tenantId || artifact.familiarId !== familiarId) {
     throw new Error(`${label} scope does not match requested familiar`);
   }
+}
+
+function hasOwn(record: Readonly<Record<string, unknown>> | undefined, key: string): boolean {
+  return record !== undefined && Object.prototype.hasOwnProperty.call(record, key);
 }
 
 export function buildFamiliarMemoryConsoleSnapshot(
@@ -142,10 +154,16 @@ export function buildFamiliarMemoryConsoleSnapshot(
       contentDigest: memory.contentDigest,
       originLabelDigest: memory.originLabelDigest,
       sourceDigests: [...memory.sourceArtifacts],
-      mutationCount: input.mutationCountByMemoryId?.[memory.memoryId] ?? 0,
-      influencedContextReceiptDigests: [
-        ...(input.influenceReceiptsByMemoryId?.[memory.memoryId] ?? []),
-      ],
+      ...(hasOwn(input.mutationCountByMemoryId, memory.memoryId)
+        ? { mutationCount: input.mutationCountByMemoryId?.[memory.memoryId] }
+        : {}),
+      ...(hasOwn(input.influenceReceiptsByMemoryId, memory.memoryId)
+        ? {
+            influencedContextReceiptDigests: [
+              ...(input.influenceReceiptsByMemoryId?.[memory.memoryId] ?? []),
+            ],
+          }
+        : {}),
       createdAt: memory.createdAt,
     })),
     ...(tombstone

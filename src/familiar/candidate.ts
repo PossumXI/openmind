@@ -1,6 +1,12 @@
 import { sha256DigestCanonical } from "./canonicalize.js";
 import { isDigest } from "./validate.js";
-import type { Digest, FamiliarMemoryClass, MemoryTrustClass } from "./types.js";
+import {
+  FAMILIAR_MEMORY_CLASSES,
+  MEMORY_TRUST_CLASSES,
+  type Digest,
+  type FamiliarMemoryClass,
+  type MemoryTrustClass,
+} from "./types.js";
 
 export type FamiliarMemoryCandidateV1 = {
   kind: "arobi.familiar-memory-candidate";
@@ -41,27 +47,8 @@ export type FamiliarCandidateBuildInput = {
   proposedClass?: FamiliarMemoryClass;
 };
 
-const MEMORY_CLASSES = new Set<FamiliarMemoryClass>([
-  "EPISODIC",
-  "CORE",
-  "PREFERENCE",
-  "RELATIONSHIP",
-  "PROCEDURAL",
-  "SKILL",
-  "EVIDENCE",
-  "HYPOTHESIS",
-  "EXTERNAL_OBSERVATION",
-  "AUTHORITY_REFERENCE",
-]);
-
-const TRUST_CLASSES = new Set<MemoryTrustClass>([
-  "OPERATOR_AUTHORED",
-  "AUTHORIZED_SYSTEM",
-  "VERIFIED_MEASUREMENT",
-  "OBSERVED",
-  "DERIVED",
-  "EXTERNAL_UNTRUSTED",
-]);
+const MEMORY_CLASS_SET = new Set<string>(FAMILIAR_MEMORY_CLASSES);
+const TRUST_CLASS_SET = new Set<string>(MEMORY_TRUST_CLASSES);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -84,10 +71,10 @@ export function assertFamiliarMemoryCandidateV1(
   if (!Number.isSafeInteger(value.identityEpoch) || (value.identityEpoch as number) < 0) {
     throw new Error("FMP candidate requires a non-negative identityEpoch");
   }
-  if (!MEMORY_CLASSES.has(value.proposedClass as FamiliarMemoryClass)) {
+  if (typeof value.proposedClass !== "string" || !MEMORY_CLASS_SET.has(value.proposedClass)) {
     throw new Error("FMP candidate has invalid proposedClass");
   }
-  if (!TRUST_CLASSES.has(value.trustClass as MemoryTrustClass)) {
+  if (typeof value.trustClass !== "string" || !TRUST_CLASS_SET.has(value.trustClass)) {
     throw new Error("FMP candidate has invalid trustClass");
   }
   if (!isDigest(value.originDigest) || !isDigest(value.contentDigest)) {

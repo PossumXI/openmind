@@ -2,6 +2,10 @@ import { randomUUID } from "node:crypto";
 import { sqlIdent, sqlStr } from "../utils/sql.js";
 import type { QueryFn } from "../deeplake-schema.js";
 import { canonicalizeFamiliarValue, sha256DigestCanonical } from "./canonicalize.js";
+import {
+  assertFamiliarMemoryCandidateV1,
+  type FamiliarMemoryCandidateV1,
+} from "./candidate.js";
 import { ensureFamiliarTables, type FamiliarTableNames } from "./schema.js";
 import {
   assertContextUseReceiptV1,
@@ -87,6 +91,38 @@ export class FamiliarPersistence {
       writer_agent: text(this.options.writerAgent),
       plugin_version: text(this.options.pluginVersion),
     };
+  }
+
+  /**
+   * Persist a digest-only capture candidate. The canonical candidate contains
+   * only identifiers, trust/classification metadata and digests; raw familiar
+   * plaintext remains in the already-governed source event store until a
+   * separate policy-controlled promotion creates a protected memory artifact.
+   */
+  async writeCandidate(value: unknown): Promise<PersistedFamiliarArtifact> {
+    assertFamiliarMemoryCandidateV1(value);
+    const tables = await this.ensure();
+    const digest = sha256DigestCanonical(value);
+    const rowId = randomUUID();
+    await this.write(tables.candidates, {
+      id: text(rowId),
+      candidate_id: text(value.candidateId),
+      tenant_id: text(value.tenantId),
+      familiar_id: text(value.familiarId),
+      identity_epoch: integer(value.identityEpoch),
+      source_event_id: text(value.sourceEventId),
+      source_session_id: text(value.sourceSessionId),
+      proposed_class: text(value.proposedClass),
+      trust_class: text(value.trustClass),
+      origin_digest: text(value.originDigest),
+      content_digest: text(value.contentDigest),
+      may_authorize: "0",
+      promotion_state: text(value.promotionState),
+      canonical_json: text(canonicalText(value)),
+      created_at: text(value.createdAt),
+      ...this.writerColumns(),
+    });
+    return { rowId, digest };
   }
 
   async writeManifest(value: unknown): Promise<PersistedFamiliarArtifact> {
@@ -295,5 +331,49 @@ export class FamiliarPersistence {
       current.push(parsed);
     }
     return current;
+  }
+
+  /**
+   * Read digest-only capture candidates for one tenant/familiar. Candidates are
+   * never returned as live memories and never participate in authorization.
+   */
+  async readCandidates(args: {
+    tenantId: string;
+    familiarId: string;
+    identityEpoch?: number;
+    limit?: number;
+  }): Promise<FamiliarMemoryCandidateV1[]> {
+    if (!args.tenantId.trim() || !args.familiarId.trim()) {
+      throw new Error("FMP candidate read requires non-empty tenantId and familiarId");
+    }
+    if (args.identityEpoch !== undefined && (!Number.isSafeInteger(args.identityEpoch) || args.identityEpoch < 0)) {
+      throw new Error("FMP candidate read identityEpoch must be a non-negative safe integer");
+    }
+    const limit = args.limit ?? 100;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) {
+      throw new Error("FMP candidate read limit must be an integer between 1 and 1000");
+    }
+    const tables = await this.ensure();
+    const table = sqlIdent(tables.candidates);
+    const epochClause = args.identityEpoch === undefined ? "" : ` AND identity_epoch = ${integer(args.identityEpoch)}`;
+    const query =
+      `SELECT canonical_json FROM "${table}" ` +
+      `WHERE tenant_id = ${text(args.tenantId)} AND familiar_id = ${text(args.familiarId)}${epochClause} ` +
+      `ORDER BY created_at DESC LIMIT ${limit}`;
+    const rows = (await this.options.query(query)) as Array<Record<string, unknown>>;
+    const out: FamiliarMemoryCandidateV1[] = [];
+    for (const row of rows) {
+      if (typeof row.canonical_json !== "string") continue;
+      try {
+        const parsed: unknown = JSON.parse(row.canonical_json);
+        assertFamiliarMemoryCandidateV1(parsed);
+        if (parsed.tenantId !== args.tenantId || parsed.familiarId !== args.familiarId) continue;
+        if (args.identityEpoch !== undefined && parsed.identityEpoch !== args.identityEpoch) continue;
+        out.push(parsed);
+      } catch {
+        continue;
+      }
+    }
+    return out;
   }
 }

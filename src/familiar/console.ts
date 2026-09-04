@@ -1,3 +1,4 @@
+import { sha256DigestCanonical } from "./canonicalize.js";
 import {
   assertFamiliarContinuityAttestationV1,
   assertFamiliarMemoryArtifactV1,
@@ -122,7 +123,7 @@ export function buildFamiliarMemoryConsoleSnapshot(
     continuityState: input.continuityState,
     ...(continuity
       ? {
-          continuityDigest: undefined,
+          continuityDigest: sha256DigestCanonical(continuity),
           memoryRoot: continuity.memoryRoot,
           coreMemoryRoot: continuity.coreMemoryRoot,
           lastAttestedAt: continuity.createdAt,
@@ -150,7 +151,7 @@ export function buildFamiliarMemoryConsoleSnapshot(
     ...(tombstone
       ? {
           forgetting: {
-            lastTombstoneDigest: undefined,
+            lastTombstoneDigest: sha256DigestCanonical(tombstone),
             surfaces: tombstone.surfaces.map((surface) => ({
               surface: surface.surface,
               state: surface.state,

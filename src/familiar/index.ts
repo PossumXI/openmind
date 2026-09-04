@@ -7,3 +7,4 @@ export * from "./console.js";
 export * from "./candidate.js";
 export * from "./context-use.js";
 export * from "./retrieval.js";
+export * from "./retrieval-context.js";

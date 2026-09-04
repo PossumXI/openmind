@@ -27,15 +27,9 @@ export interface FamiliarMemoryConsoleItemV1 {
   contentDigest: Digest;
   originLabelDigest: Digest;
   sourceDigests: Digest[];
-  /**
-   * Derived projection. Omitted means the transport did not provide a verified
-   * mutation count; omission must not be rendered as zero.
-   */
+  /** Omitted means the transport did not provide a verified mutation count. */
   mutationCount?: number;
-  /**
-   * Derived projection. Omitted means influence receipts were not supplied by
-   * the transport; omission must not be rendered as an empty/clean set.
-   */
+  /** Omitted means influence receipts were not supplied by the transport. */
   influencedContextReceiptDigests?: Digest[];
   createdAt: string;
 }
@@ -69,9 +63,12 @@ export interface FamiliarMemoryConsoleBuildInput {
   familiarId: string;
   familiarLabel?: string;
   /**
-   * Supplied by verifier/policy. The builder never upgrades continuity to
-   * VERIFIED merely because an attestation exists.
+   * Current trusted familiar epoch from runtime/policy. This is required even
+   * when no continuity attestation exists so the console never manufactures
+   * epoch 0 from an empty result set.
    */
+  identityEpoch: number;
+  /** Supplied by verifier/policy; this builder never upgrades to VERIFIED. */
   continuityState: FamiliarConsoleContinuityState;
   continuity?: unknown;
   memories: readonly unknown[];
@@ -86,11 +83,15 @@ export interface FamiliarMemoryConsoleBuildInput {
 function ensureScope(
   tenantId: string,
   familiarId: string,
-  artifact: { tenantId: string; familiarId: string },
+  identityEpoch: number,
+  artifact: { tenantId: string; familiarId: string; identityEpoch: number },
   label: string,
 ): void {
   if (artifact.tenantId !== tenantId || artifact.familiarId !== familiarId) {
     throw new Error(`${label} scope does not match requested familiar`);
+  }
+  if (artifact.identityEpoch !== identityEpoch) {
+    throw new Error(`${label} identity epoch does not match current familiar epoch`);
   }
 }
 
@@ -104,24 +105,39 @@ export function buildFamiliarMemoryConsoleSnapshot(
   if (!input.tenantId.trim() || !input.familiarId.trim()) {
     throw new Error("FMP console snapshot requires non-empty tenantId and familiarId");
   }
+  if (!Number.isSafeInteger(input.identityEpoch) || input.identityEpoch < 0) {
+    throw new Error("FMP console snapshot requires a non-negative trusted identityEpoch");
+  }
 
   let continuity: FamiliarContinuityAttestationV1 | undefined;
   if (input.continuity !== undefined) {
     assertFamiliarContinuityAttestationV1(input.continuity);
-    ensureScope(input.tenantId, input.familiarId, input.continuity, "continuity attestation");
+    ensureScope(
+      input.tenantId,
+      input.familiarId,
+      input.identityEpoch,
+      input.continuity,
+      "continuity attestation",
+    );
     continuity = input.continuity;
   }
 
   const memories: FamiliarMemoryArtifactV1[] = input.memories.map((value, index) => {
     assertFamiliarMemoryArtifactV1(value);
-    ensureScope(input.tenantId, input.familiarId, value, `memory[${index}]`);
+    ensureScope(input.tenantId, input.familiarId, input.identityEpoch, value, `memory[${index}]`);
     return value;
   });
 
   let tombstone: MemoryTombstoneReceiptV1 | undefined;
   if (input.latestTombstone !== undefined) {
     assertMemoryTombstoneReceiptV1(input.latestTombstone);
-    ensureScope(input.tenantId, input.familiarId, input.latestTombstone, "tombstone");
+    ensureScope(
+      input.tenantId,
+      input.familiarId,
+      input.identityEpoch,
+      input.latestTombstone,
+      "tombstone",
+    );
     tombstone = input.latestTombstone;
   }
 
@@ -131,7 +147,7 @@ export function buildFamiliarMemoryConsoleSnapshot(
     tenantId: input.tenantId,
     familiarId: input.familiarId,
     ...(input.familiarLabel?.trim() ? { familiarLabel: input.familiarLabel.trim() } : {}),
-    identityEpoch: continuity?.identityEpoch ?? Math.max(0, ...memories.map((m) => m.identityEpoch)),
+    identityEpoch: input.identityEpoch,
     continuityState: input.continuityState,
     ...(continuity
       ? {

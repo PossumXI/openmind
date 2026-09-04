@@ -1,12 +1,14 @@
 import type { Config } from "../config.js";
 
-export type FamiliarCaptureRuntime = {
-  enabled: boolean;
-  tenantId?: string;
-  familiarId?: string;
-  identityEpoch?: number;
-  tablePrefix?: string;
-};
+export type FamiliarCaptureRuntime =
+  | { enabled: false }
+  | {
+      enabled: true;
+      tenantId: string;
+      familiarId: string;
+      identityEpoch: number;
+      tablePrefix: string;
+    };
 
 export type FamiliarRuntimeEnvironment = Readonly<Record<string, string | undefined>>;
 
@@ -50,7 +52,7 @@ export function resolveFamiliarCaptureRuntime(
   const tenantId = nonEmpty(config.orgId, "trusted config.orgId");
   const familiarId = nonEmpty(env.AROBI_FMP_FAMILIAR_ID, "AROBI_FMP_FAMILIAR_ID");
   const epoch = identityEpoch(env.AROBI_FMP_IDENTITY_EPOCH);
-  const tablePrefix = (env.AROBI_FMP_TABLE_PREFIX?.trim() || config.tableName.trim());
+  const tablePrefix = env.AROBI_FMP_TABLE_PREFIX?.trim() || config.tableName.trim();
   if (!tablePrefix) {
     throw new Error("FMP capture requires a non-empty canonical table prefix");
   }

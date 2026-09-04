@@ -4,6 +4,7 @@ export * from "./validate.js";
 export * from "./schema.js";
 export * from "./persistence.js";
 export * from "./console.js";
+export * from "./console-store.js";
 export * from "./candidate.js";
 export * from "./context-use.js";
 export * from "./retrieval.js";

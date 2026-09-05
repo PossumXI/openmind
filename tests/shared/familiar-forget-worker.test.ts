@@ -7,7 +7,6 @@ import {
   buildFamiliarPromotionCommit,
   buildFamiliarPromotionPlan,
   runControlledFamiliarForget,
-  sha256DigestCanonical,
   type Digest,
 } from "../../src/familiar/index.js";
 import { FAMILIAR_FORGET_HOLD_DESCRIPTION } from "../../src/hooks/upload-summary.js";
@@ -159,13 +158,12 @@ function database() {
   return { query, vaultRows, sessionRows, memoryRows };
 }
 
-function verifiedGraph() {
+function unknownMemoryGraphFailure() {
   return {
     erase: async () => ({
       surface: "GRAPH_PROJECTION" as const,
-      state: "VERIFIED" as const,
-      verificationDigest: sha256DigestCanonical({ surface: "GRAPH_PROJECTION", state: "ABSENT" }),
-      detail: "graph fixture verified absent",
+      state: "FAILED" as const,
+      detail: "future memory graph profile has no erasure implementation",
     }),
   };
 }
@@ -182,7 +180,7 @@ function vault(query: QueryFn) {
 }
 
 describe("FMP controlled forgetting worker", () => {
-  it("stays INCOMPLETE when graph erasure is not executable while closing source/summary surfaces", async () => {
+  it("stays INCOMPLETE when a future/unknown memory graph cannot erase while source/summary surfaces close", async () => {
     const db = database();
     const protectedVault = vault(db.query);
     const promotion = plan();
@@ -198,6 +196,7 @@ describe("FMP controlled forgetting worker", () => {
       actorRef: "principal:operator-1",
       reasonDigest: D2,
       policyEpoch: 5,
+      graphProjection: unknownMemoryGraphFailure(),
       createdAt: NOW,
     });
 
@@ -208,14 +207,9 @@ describe("FMP controlled forgetting worker", () => {
     expect(result.surfaces.find((surface) => surface.surface === "SUMMARY_PROJECTION")?.state).toBe("VERIFIED");
     expect(db.sessionRows[0].message_embedding).toBeNull();
     expect((db.sessionRows[0].message as Row).type).toBe("familiar_memory_forgotten_source");
-    expect(db.memoryRows[0]).toMatchObject({
-      summary: "",
-      summary_embedding: null,
-      description: FAMILIAR_FORGET_HOLD_DESCRIPTION,
-    });
   });
 
-  it("produces a verified FORGET mutation/tombstone only after every controlled surface verifies", async () => {
+  it("classifies the current OpenMind codebase graph NOT_APPLICABLE and can finalize controlled forgetting", async () => {
     const db = database();
     const protectedVault = vault(db.query);
     const promotion = plan();
@@ -231,11 +225,11 @@ describe("FMP controlled forgetting worker", () => {
       actorRef: "principal:operator-1",
       reasonDigest: D2,
       policyEpoch: 5,
-      graphProjection: verifiedGraph(),
       createdAt: NOW,
     });
 
     expect(result.finalization.state).toBe("VERIFIED");
+    expect(result.surfaces.find((surface) => surface.surface === "GRAPH_PROJECTION")?.state).toBe("NOT_APPLICABLE");
     if (result.finalization.state === "VERIFIED") {
       expect(result.finalization.mutation.operation).toBe("FORGET");
       expect(result.finalization.tombstone.forgottenDigest).toBe(result.finalization.memoryDigest);
@@ -247,7 +241,7 @@ describe("FMP controlled forgetting worker", () => {
     expect(db.memoryRows[0].description).toBe(FAMILIAR_FORGET_HOLD_DESCRIPTION);
   });
 
-  it("can retry after a downstream graph failure without needing forgotten plaintext back", async () => {
+  it("can retry after an unknown-graph failure without needing forgotten plaintext back", async () => {
     const db = database();
     const protectedVault = vault(db.query);
     const promotion = plan();
@@ -263,6 +257,7 @@ describe("FMP controlled forgetting worker", () => {
       actorRef: "principal:operator-1",
       reasonDigest: D2,
       policyEpoch: 5,
+      graphProjection: unknownMemoryGraphFailure(),
       createdAt: NOW,
     });
     expect(first.finalization.state).toBe("INCOMPLETE");
@@ -276,7 +271,6 @@ describe("FMP controlled forgetting worker", () => {
       actorRef: "principal:operator-1",
       reasonDigest: D2,
       policyEpoch: 5,
-      graphProjection: verifiedGraph(),
       createdAt: NOW,
     });
 

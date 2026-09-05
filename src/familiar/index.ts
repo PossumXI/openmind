@@ -9,6 +9,7 @@ export * from "./candidate.js";
 export * from "./context-use.js";
 export * from "./retrieval.js";
 export * from "./retrieval-context.js";
+export * from "./committed-retrieval.js";
 export * from "./runtime.js";
 export * from "./promotion.js";
 export * from "./promotion-store.js";

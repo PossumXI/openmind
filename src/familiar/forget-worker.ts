@@ -1,6 +1,5 @@
 import type { QueryFn } from "../deeplake-schema.js";
 import { eraseSessionEventCache } from "../hooks/session-event-cache.js";
-import { sqlIdent, sqlStr } from "../utils/sql.js";
 import { sha256DigestCanonical } from "./canonicalize.js";
 import type {
   FamiliarForgetCommitStore,
@@ -16,6 +15,7 @@ import {
   assertFamiliarPromotionCommitV1,
   type FamiliarPromotionCommitV1,
 } from "./promotion-store.js";
+import { suppressFamiliarSourceAndSummary } from "./source-suppression.js";
 import type { Digest } from "./types.js";
 
 export type FamiliarProjectionErasureAdapter = {
@@ -27,11 +27,17 @@ export type FamiliarControlledForgetWorkerInput = {
   vault: FamiliarPayloadVault;
   query: QueryFn;
   sessionsTableName: string;
+  /** Existing OpenMind wiki-summary table. Required to close SUMMARY_PROJECTION. */
+  memoryTableName?: string;
   actorRef: string;
   reasonDigest: Digest;
   policyEpoch: number;
   invalidatedDerivedDigests?: readonly Digest[];
   graphProjection?: FamiliarProjectionErasureAdapter;
+  /**
+   * Optional additional summary-derived surface. This can only narrow the
+   * built-in source-session summary result; it cannot replace or bypass it.
+   */
   summaryProjection?: FamiliarProjectionErasureAdapter;
   createdAt?: string;
 };
@@ -42,74 +48,12 @@ export type DurableFamiliarForgetResult = {
   persistence?: PersistedFamiliarForgetCommit;
 };
 
-function text(value: string): string {
-  return `'${sqlStr(value)}'`;
-}
-
 function verificationDigest(value: unknown): Digest {
   return sha256DigestCanonical({
     kind: "arobi.familiar-erasure-verification",
     version: 1,
     ...((value ?? {}) as Record<string, unknown>),
   });
-}
-
-async function eraseLegacySourceEmbedding(args: {
-  query: QueryFn;
-  sessionsTableName: string;
-  commit: FamiliarPromotionCommitV1;
-}): Promise<FamiliarForgetSurfaceResult> {
-  const table = sqlIdent(args.sessionsTableName);
-  try {
-    await args.query(
-      `UPDATE "${table}" SET message_embedding = NULL WHERE id = ${text(args.commit.sourceEventId)}`,
-    );
-    const rows = (await args.query(
-      `SELECT id, message_embedding FROM "${table}" WHERE id = ${text(args.commit.sourceEventId)} LIMIT 2`,
-    )) as Array<Record<string, unknown>>;
-    if (rows.length > 1) {
-      return {
-        surface: "EMBEDDING_INDEX",
-        state: "FAILED",
-        detail: "Multiple legacy session rows matched the promotion sourceEventId; embedding erasure is ambiguous.",
-      };
-    }
-    const embedding = rows[0]?.message_embedding;
-    if (
-      rows.length === 1 &&
-      embedding !== null &&
-      embedding !== undefined &&
-      !(Array.isArray(embedding) && embedding.length === 0)
-    ) {
-      return {
-        surface: "EMBEDDING_INDEX",
-        state: "FAILED",
-        detail: "The source session embedding remained readable after the scoped NULL update.",
-      };
-    }
-    return {
-      surface: "EMBEDDING_INDEX",
-      state: "VERIFIED",
-      verificationDigest: verificationDigest({
-        surface: "EMBEDDING_INDEX",
-        sourceEventId: args.commit.sourceEventId,
-        tenantId: args.commit.tenantId,
-        familiarId: args.commit.familiarId,
-        identityEpoch: args.commit.identityEpoch,
-        state: rows.length === 0 ? "SOURCE_EVENT_ABSENT" : "EMBEDDING_ABSENT",
-      }),
-      detail:
-        rows.length === 0
-          ? "The historical source event is absent from this sessions table, so no live vector embedding remains there."
-          : "The historical source event remains for audit, but its semantic embedding is absent from the live sessions table.",
-    };
-  } catch (error) {
-    return {
-      surface: "EMBEDDING_INDEX",
-      state: "FAILED",
-      detail: `The legacy source embedding could not be erased and verified: ${error instanceof Error ? error.message : String(error)}`,
-    };
-  }
 }
 
 function eraseLiveCache(commit: FamiliarPromotionCommitV1): FamiliarForgetSurfaceResult {
@@ -140,8 +84,7 @@ function eraseLiveCache(commit: FamiliarPromotionCommitV1): FamiliarForgetSurfac
   };
 }
 
-function missingProjectionAdapter(surface: "GRAPH_PROJECTION" | "SUMMARY_PROJECTION"):
-  FamiliarForgetSurfaceResult {
+function missingProjectionAdapter(surface: "GRAPH_PROJECTION"): FamiliarForgetSurfaceResult {
   return {
     surface,
     state: "FAILED",
@@ -155,7 +98,10 @@ async function runProjectionAdapter(
   adapter: FamiliarProjectionErasureAdapter | undefined,
   commit: FamiliarPromotionCommitV1,
 ): Promise<FamiliarForgetSurfaceResult> {
-  if (!adapter) return missingProjectionAdapter(surface);
+  if (!adapter) {
+    if (surface === "GRAPH_PROJECTION") return missingProjectionAdapter(surface);
+    throw new Error("summary projection adapter is optional and must not be called when absent");
+  }
   try {
     const result = await adapter.erase(commit);
     if (result.surface !== surface) {
@@ -175,10 +121,59 @@ async function runProjectionAdapter(
   }
 }
 
+async function enforceAdditionalSummaryProjection(args: {
+  builtIn: FamiliarForgetSurfaceResult;
+  adapter?: FamiliarProjectionErasureAdapter;
+  commit: FamiliarPromotionCommitV1;
+}): Promise<FamiliarForgetSurfaceResult> {
+  if (!args.adapter || args.builtIn.state === "FAILED" || args.builtIn.state === "OUTSIDE_CONTROL") {
+    return args.builtIn;
+  }
+  const supplemental = await runProjectionAdapter(
+    "SUMMARY_PROJECTION",
+    args.adapter,
+    args.commit,
+  );
+  if (supplemental.state === "FAILED" || supplemental.state === "OUTSIDE_CONTROL") {
+    return supplemental;
+  }
+  if (supplemental.state === "NOT_APPLICABLE") {
+    return {
+      ...args.builtIn,
+      detail: `${args.builtIn.detail ?? "Built-in summary suppression verified."} Supplemental summary projection: ${supplemental.detail}`,
+    };
+  }
+  if (args.builtIn.state !== "VERIFIED" || !args.builtIn.verificationDigest) {
+    return args.builtIn;
+  }
+  if (!supplemental.verificationDigest) {
+    return {
+      surface: "SUMMARY_PROJECTION",
+      state: "FAILED",
+      detail: "Supplemental summary projection reported VERIFIED without verificationDigest.",
+    };
+  }
+  return {
+    surface: "SUMMARY_PROJECTION",
+    state: "VERIFIED",
+    verificationDigest: verificationDigest({
+      surface: "SUMMARY_PROJECTION",
+      builtInVerificationDigest: args.builtIn.verificationDigest,
+      supplementalVerificationDigest: supplemental.verificationDigest,
+      state: "BUILT_IN_AND_SUPPLEMENTAL_VERIFIED",
+    }),
+    detail: `${args.builtIn.detail ?? "Built-in summary suppression verified."} ${supplemental.detail ?? "Supplemental summary projection verified."}`,
+  };
+}
+
 /**
  * Execute every currently-known Arobi-controlled forgetting surface and then
- * delegate final truth-state construction to finalizeFamiliarForget(). Missing
- * graph/summary adapters deliberately keep the result INCOMPLETE.
+ * delegate final truth-state construction to finalizeFamiliarForget().
+ *
+ * The source event + source-session wiki summary are handled by the built-in
+ * digest-bound suppression path. GRAPH_PROJECTION remains a hard gate until the
+ * production graph's derivation semantics are explicitly wired. No missing
+ * controlled surface is converted into a synthetic PASS.
  */
 export async function runControlledFamiliarForget(
   input: FamiliarControlledForgetWorkerInput,
@@ -189,21 +184,24 @@ export async function runControlledFamiliarForget(
   assertFamiliarPromotionCommitV1(input.commit);
 
   const canonicalPayload = await input.vault.erase(input.commit);
-  const embedding = await eraseLegacySourceEmbedding({
+  const sourceSuppression = await suppressFamiliarSourceAndSummary({
     query: input.query,
     sessionsTableName: input.sessionsTableName,
+    memoryTableName: input.memoryTableName,
     commit: input.commit,
+    now: input.createdAt,
   });
+  const embedding = sourceSuppression.embedding;
   const graph = await runProjectionAdapter(
     "GRAPH_PROJECTION",
     input.graphProjection,
     input.commit,
   );
-  const summary = await runProjectionAdapter(
-    "SUMMARY_PROJECTION",
-    input.summaryProjection,
-    input.commit,
-  );
+  const summary = await enforceAdditionalSummaryProjection({
+    builtIn: sourceSuppression.summary,
+    adapter: input.summaryProjection,
+    commit: input.commit,
+  });
   const cache = eraseLiveCache(input.commit);
 
   const surfaces: FamiliarForgetSurfaceResult[] = [
@@ -227,10 +225,10 @@ export async function runControlledFamiliarForget(
 
 /**
  * Execute controlled erasure and append the authoritative forget commit only
- * when every controlled surface has verified. INCOMPLETE never writes a
- * tombstone ledger row. If the ledger append itself fails, the error propagates:
- * erased payload/index/cache state remains safe but the system must retry and
- * must not report durable forgetting until this function returns persistence.
+ * when every controlled surface has verified/non-failing evidence. INCOMPLETE
+ * never writes a tombstone ledger row. If the ledger append itself fails, the
+ * error propagates; source suppression is retry-safe because the bounded audit
+ * tombstone is an accepted idempotent predecessor on the next run.
  */
 export async function runAndCommitControlledFamiliarForget(args: {
   worker: FamiliarControlledForgetWorkerInput;

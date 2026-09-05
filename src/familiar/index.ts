@@ -16,5 +16,6 @@ export * from "./promotion-store.js";
 export * from "./payload-vault.js";
 export * from "./forgetting.js";
 export * from "./forget-store.js";
+export * from "./graph-projection.js";
 export * from "./source-suppression.js";
 export * from "./forget-worker.js";

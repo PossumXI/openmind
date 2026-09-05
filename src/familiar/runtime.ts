@@ -8,6 +8,8 @@ export type FamiliarCaptureRuntime =
       familiarId: string;
       identityEpoch: number;
       tablePrefix: string;
+      /** Optional trusted local transport target consumed by JAWS Flight Deck. */
+      consoleSnapshotPath?: string;
     };
 
 export type FamiliarRuntimeEnvironment = Readonly<Record<string, string | undefined>>;
@@ -56,6 +58,7 @@ export function resolveFamiliarCaptureRuntime(
   if (!tablePrefix) {
     throw new Error("FMP capture requires a non-empty canonical table prefix");
   }
+  const consoleSnapshotPath = env.AROBI_FMP_CONSOLE_SNAPSHOT_PATH?.trim() || undefined;
 
   return {
     enabled: true,
@@ -63,5 +66,6 @@ export function resolveFamiliarCaptureRuntime(
     familiarId,
     identityEpoch: epoch,
     tablePrefix,
+    ...(consoleSnapshotPath ? { consoleSnapshotPath } : {}),
   };
 }

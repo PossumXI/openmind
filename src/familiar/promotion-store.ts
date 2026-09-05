@@ -28,6 +28,8 @@ export const FAMILIAR_PROMOTION_COMMIT_COLUMNS: readonly ColumnDef[] = Object.fr
   { name: "identity_epoch", sql: "BIGINT NOT NULL DEFAULT 0" },
   { name: "candidate_id", sql: "TEXT NOT NULL DEFAULT ''" },
   { name: "candidate_digest", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "source_event_id", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "source_session_id", sql: "TEXT NOT NULL DEFAULT ''" },
   { name: "memory_id", sql: "TEXT NOT NULL DEFAULT ''" },
   { name: "memory_digest", sql: "TEXT NOT NULL DEFAULT ''" },
   { name: "mutation_id", sql: "TEXT NOT NULL DEFAULT ''" },
@@ -48,6 +50,8 @@ export type FamiliarPromotionCommitV1 = {
   identityEpoch: number;
   candidateId: string;
   candidateDigest: Digest;
+  sourceEventId: string;
+  sourceSessionId?: string;
   memoryId: string;
   memoryDigest: Digest;
   mutationId: string;
@@ -121,10 +125,25 @@ export function assertFamiliarPromotionCommitV1(
   if (commit.kind !== "arobi.familiar-promotion-commit" || commit.version !== 1) {
     throw new Error("unsupported FMP promotion commit contract");
   }
-  for (const key of ["commitId", "tenantId", "familiarId", "candidateId", "memoryId", "mutationId", "createdAt"] as const) {
+  for (const key of [
+    "commitId",
+    "tenantId",
+    "familiarId",
+    "candidateId",
+    "sourceEventId",
+    "memoryId",
+    "mutationId",
+    "createdAt",
+  ] as const) {
     if (typeof commit[key] !== "string" || !commit[key].trim()) {
       throw new Error(`FMP promotion commit ${key} must be a non-empty string`);
     }
+  }
+  if (
+    commit.sourceSessionId !== undefined &&
+    (typeof commit.sourceSessionId !== "string" || !commit.sourceSessionId.trim())
+  ) {
+    throw new Error("FMP promotion commit sourceSessionId must be non-empty when present");
   }
   if (!Number.isSafeInteger(commit.identityEpoch) || (commit.identityEpoch as number) < 0) {
     throw new Error("FMP promotion commit identityEpoch must be a non-negative safe integer");
@@ -206,6 +225,8 @@ export function buildFamiliarPromotionCommit(
     identityEpoch: plan.candidate.identityEpoch,
     candidateId: plan.candidate.candidateId,
     candidateDigest,
+    sourceEventId: plan.candidate.sourceEventId,
+    ...(plan.candidate.sourceSessionId ? { sourceSessionId: plan.candidate.sourceSessionId } : {}),
     memoryId: plan.memory.memoryId,
     memoryDigest,
     mutationId: plan.mutation.mutationId,
@@ -243,6 +264,17 @@ export class FamiliarPromotionCommitStore {
       unique: true,
     }));
     await this.options.query(createIndexSql({
+      indexName: `${this.name}_memory_scope_uq`,
+      tableName: this.name,
+      columns: ["tenant_id", "familiar_id", "identity_epoch", "memory_id"],
+      unique: true,
+    }));
+    await this.options.query(createIndexSql({
+      indexName: `${this.name}_source_event_idx`,
+      tableName: this.name,
+      columns: ["tenant_id", "familiar_id", "source_event_id"],
+    }));
+    await this.options.query(createIndexSql({
       indexName: `${this.name}_scope_idx`,
       tableName: this.name,
       columns: ["tenant_id", "familiar_id", "identity_epoch", "created_at"],
@@ -270,6 +302,8 @@ export class FamiliarPromotionCommitStore {
       identity_epoch: integer(commit.identityEpoch),
       candidate_id: text(commit.candidateId),
       candidate_digest: text(commit.candidateDigest),
+      source_event_id: text(commit.sourceEventId),
+      source_session_id: text(commit.sourceSessionId ?? ""),
       memory_id: text(commit.memoryId),
       memory_digest: text(commit.memoryDigest),
       mutation_id: text(commit.mutationId),

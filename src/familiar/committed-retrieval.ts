@@ -40,7 +40,8 @@ export interface CommittedFamiliarRetrievalRequest extends FamiliarRetrievalRequ
 
 /**
  * Recall only from authoritative promotion commits that do not have a verified
- * authoritative forget commit.
+ * authoritative forget commit and whose artifact digest has not been explicitly
+ * invalidated as a derived dependency by a verified forget tombstone.
  *
  * Sources are deliberately structural interfaces rather than concrete write-
  * oriented store classes. Production write paths may use the normal stores;
@@ -80,28 +81,16 @@ export async function retrieveCommittedFamiliarMemories(args: {
   ]);
 
   const forgottenPromotionIds = new Set<string>();
+  const invalidatedDerivedDigests = new Set<Digest>();
   for (const forget of forgetCommits) {
     if (forgottenPromotionIds.has(forget.promotionCommitId)) {
       throw new Error("FMP committed retrieval found duplicate forget commits for one promotion");
     }
     forgottenPromotionIds.add(forget.promotionCommitId);
-  }
-
-  const commits = allPromotions.filter((commit) => {
-    const forgotten = forgetCommits.find(
-      (entry) => entry.promotionCommitId === commit.commitId,
-    );
-    if (!forgotten) return true;
-    const promotionDigest = sha256DigestCanonical(commit);
-    if (
-      forgotten.promotionCommitDigest !== promotionDigest ||
-      forgotten.memoryId !== commit.memoryId ||
-      forgotten.memoryDigest !== commit.memoryDigest
-    ) {
-      throw new Error("FMP forget commit does not match the promotion it attempts to suppress");
+    for (const digest of forget.tombstone.invalidatedDerivedDigests) {
+      invalidatedDerivedDigests.add(digest);
     }
-    return false;
-  });
+  }
 
   const knownPromotionIds = new Set(allPromotions.map((commit) => commit.commitId));
   for (const forget of forgetCommits) {
@@ -111,6 +100,32 @@ export async function retrieveCommittedFamiliarMemories(args: {
       throw new Error("FMP committed retrieval found forget commit without matching promotion history");
     }
   }
+
+  const commits = allPromotions.filter((commit) => {
+    const forgotten = forgetCommits.find(
+      (entry) => entry.promotionCommitId === commit.commitId,
+    );
+    if (forgotten) {
+      const promotionDigest = sha256DigestCanonical(commit);
+      if (
+        forgotten.promotionCommitDigest !== promotionDigest ||
+        forgotten.memoryId !== commit.memoryId ||
+        forgotten.memoryDigest !== commit.memoryDigest
+      ) {
+        throw new Error("FMP forget commit does not match the promotion it attempts to suppress");
+      }
+      return false;
+    }
+
+    // A controlled forget can invalidate derived memories without directly
+    // forgetting each derived promotion row. Those artifact digests are
+    // authoritative negative evidence: exclude them before ranking/opening so
+    // forgotten source content cannot remain live through a derived memory.
+    if (invalidatedDerivedDigests.has(commit.memoryDigest)) {
+      return false;
+    }
+    return true;
+  });
 
   const byArtifactDigest = new Map<Digest, FamiliarPromotionCommitV1>();
   const memoryIds = new Set<string>();
@@ -131,8 +146,12 @@ export async function retrieveCommittedFamiliarMemories(args: {
 
   const metadata = await retrieveFamiliarMemories(
     {
-      readCurrentMemories: async ({ tenantId, familiarId }) => {
-        if (tenantId !== args.request.tenantId || familiarId !== args.request.familiarId) {
+      readCurrentMemories: async ({ tenantId, familiarId, identityEpoch }) => {
+        if (
+          tenantId !== args.request.tenantId ||
+          familiarId !== args.request.familiarId ||
+          identityEpoch !== args.request.identityEpoch
+        ) {
           throw new Error("FMP committed retrieval source was called with unexpected scope");
         }
         return commits.map((commit) => commit.memory);

@@ -1,14 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
+  FAMILIAR_FORGET_COMMIT_COLUMNS,
   FAMILIAR_PAYLOAD_VAULT_COLUMNS,
   FAMILIAR_PROMOTION_COMMIT_COLUMNS,
+  FamiliarForgetCommitStore,
   FamiliarPayloadVault,
   FamiliarPromotionCommitStore,
   buildFamiliarMemoryCandidate,
+  buildFamiliarPromotionCommit,
   buildFamiliarPromotionPlan,
+  finalizeFamiliarForget,
   openedCommittedArtifactDigests,
   publishFamiliarPromotion,
   retrieveCommittedFamiliarMemories,
+  sha256DigestCanonical,
   type Digest,
   type FamiliarRetrievalCandidate,
 } from "../../src/familiar/index.js";
@@ -70,15 +75,18 @@ function splitValues(text: string): string[] {
   return values;
 }
 
+function columnsFor(table: string) {
+  if (table.endsWith("_familiar_payload_vault")) return FAMILIAR_PAYLOAD_VAULT_COLUMNS;
+  if (table.endsWith("_familiar_forget_commits")) return FAMILIAR_FORGET_COMMIT_COLUMNS;
+  return FAMILIAR_PROMOTION_COMMIT_COLUMNS;
+}
+
 function database() {
   const tables = new Map<string, Row[]>();
   const query = async (statement: string) => {
     const introspection = statement.match(/WHERE table_name = '([^']+)'/);
     if (statement.includes("information_schema.columns") && introspection) {
-      const columns = introspection[1].endsWith("_familiar_payload_vault")
-        ? FAMILIAR_PAYLOAD_VAULT_COLUMNS
-        : FAMILIAR_PROMOTION_COMMIT_COLUMNS;
-      return columns.map((column) => ({ column_name: column.name }));
+      return columnsFor(introspection[1]).map((column) => ({ column_name: column.name }));
     }
     const insert = statement.match(/^INSERT INTO "([^"]+)" \((.+)\) VALUES \((.+)\)$/s);
     if (insert) {
@@ -118,6 +126,13 @@ function stores(query: (sql: string) => Promise<unknown>) {
       writerAgent: "agent:promotion-worker",
       pluginVersion: "test",
     }),
+    forgets: new FamiliarForgetCommitStore({
+      query,
+      workspaceId: "workspace-1",
+      tablePrefix: "memory",
+      writerAgent: "agent:forget-worker",
+      pluginVersion: "test",
+    }),
   };
 }
 
@@ -131,10 +146,35 @@ const request = {
   now: NOW,
 };
 
+function verifiedForget(memory: ReturnType<typeof plan>["memory"]) {
+  const surfaces = [
+    "CANONICAL_PAYLOAD",
+    "EMBEDDING_INDEX",
+    "GRAPH_PROJECTION",
+    "SUMMARY_PROJECTION",
+    "LIVE_CACHE",
+  ].map((surface) => ({
+    surface,
+    state: "VERIFIED" as const,
+    verificationDigest: sha256DigestCanonical({ surface, state: "ABSENT" }),
+    detail: `${surface} verified absent`,
+  }));
+  const finalization = finalizeFamiliarForget({
+    memory,
+    actorRef: "principal:operator-1",
+    reasonDigest: D2,
+    policyEpoch: 4,
+    surfaces,
+    createdAt: NOW,
+  });
+  if (finalization.state !== "VERIFIED") throw new Error("expected verified forget fixture");
+  return finalization;
+}
+
 describe("FMP committed protected recall", () => {
   it("ranks metadata first and opens plaintext only after committed selection", async () => {
     const db = database();
-    const { vault, commits } = stores(db.query);
+    const { vault, commits, forgets } = stores(db.query);
     const first = plan("1", "first payload");
     const second = plan("2", "second payload");
     await publishFamiliarPromotion({ plan: first, payload: "first payload", vault, commits });
@@ -143,6 +183,7 @@ describe("FMP committed protected recall", () => {
     let rankedCandidates: readonly FamiliarRetrievalCandidate[] = [];
     const results = await retrieveCommittedFamiliarMemories({
       commits,
+      forgets,
       vault,
       request,
       ranker: (candidates) => {
@@ -162,7 +203,7 @@ describe("FMP committed protected recall", () => {
 
   it("does not count a tampered/unopenable payload as opened context", async () => {
     const db = database();
-    const { vault, commits } = stores(db.query);
+    const { vault, commits, forgets } = stores(db.query);
     const one = plan("1", "first payload");
     await publishFamiliarPromotion({ plan: one, payload: "first payload", vault, commits });
 
@@ -170,9 +211,21 @@ describe("FMP committed protected recall", () => {
     if (!row) throw new Error("expected protected payload row");
     row.auth_tag_b64 = Buffer.alloc(16, 8).toString("base64");
 
-    const results = await retrieveCommittedFamiliarMemories({ commits, vault, request });
+    const results = await retrieveCommittedFamiliarMemories({ commits, forgets, vault, request });
     expect(results).toHaveLength(1);
     expect(results[0].payload.state).toBe("INCONCLUSIVE");
     expect(openedCommittedArtifactDigests(results)).toEqual([]);
+  });
+
+  it("suppresses a promotion after an authoritative verified forget commit", async () => {
+    const db = database();
+    const { vault, commits, forgets } = stores(db.query);
+    const one = plan("1", "first payload");
+    await publishFamiliarPromotion({ plan: one, payload: "first payload", vault, commits });
+    const promotion = buildFamiliarPromotionCommit(one);
+    await forgets.write({ promotion, finalization: verifiedForget(one.memory) });
+
+    const results = await retrieveCommittedFamiliarMemories({ commits, forgets, vault, request });
+    expect(results).toEqual([]);
   });
 });

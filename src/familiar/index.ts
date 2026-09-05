@@ -12,4 +12,5 @@ export * from "./retrieval-context.js";
 export * from "./runtime.js";
 export * from "./promotion.js";
 export * from "./promotion-store.js";
+export * from "./payload-vault.js";
 export * from "./forgetting.js";

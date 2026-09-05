@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { QueryFn } from "../deeplake-schema.js";
 import { FAMILIAR_FORGET_HOLD_DESCRIPTION } from "../hooks/upload-summary.js";
 import { sqlIdent, sqlStr } from "../utils/sql.js";
@@ -15,6 +16,17 @@ export type FamiliarSourceSuppressionResult = {
   sourceTombstoneDigest?: Digest;
   summaryPath?: string;
 };
+
+const TOMBSTONE_KEYS = new Set([
+  "id",
+  "type",
+  "forgotten",
+  "original_event_digest",
+  "familiar_promotion_commit_id",
+  "session_id",
+  "timestamp",
+  "original_type",
+]);
 
 function text(value: string): string {
   return `'${sqlStr(value)}'`;
@@ -67,22 +79,37 @@ function safeSessionId(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
+function isBoundSuppressionTombstone(
+  value: Record<string, unknown>,
+  commit: FamiliarPromotionCommitV1,
+): boolean {
+  if (Object.keys(value).some((key) => !TOMBSTONE_KEYS.has(key))) return false;
+  return value.id === commit.sourceEventId &&
+    value.type === "familiar_memory_forgotten_source" &&
+    value.forgotten === true &&
+    value.original_event_digest === commit.sourceEventDigest &&
+    value.familiar_promotion_commit_id === commit.commitId;
+}
+
+function failed(detail: string): FamiliarSourceSuppressionResult {
+  return {
+    embedding: { surface: "EMBEDDING_INDEX", state: "FAILED", detail },
+    summary: { surface: "SUMMARY_PROJECTION", state: "FAILED", detail },
+  };
+}
+
 /**
  * Replace the exact legacy source event with a non-secret audit tombstone and
  * place the exact per-session wiki summary into regeneration HOLD.
  *
- * This function is intentionally strict:
- * - the source row must be unique;
- * - its canonical JSON digest must equal promotion.sourceEventDigest;
- * - event id/session binding must match the promotion;
- * - only safe chronology/type metadata survives the source rewrite;
- * - the summary path is derived from the source row's author + trusted session
- *   id, never from fuzzy text or semantic matching;
- * - the held summary is emptied and its embedding nulled, then read back.
+ * First execution proves the source row against promotion.sourceEventDigest.
+ * Retried execution accepts only the exact bounded Arobi tombstone for the same
+ * promotion/digest, then normalizes it again. This keeps the operation retryable
+ * if a later graph gate or forget-ledger append fails after source suppression.
  *
- * `uploadSummary()` treats FAMILIAR_FORGET_HOLD_DESCRIPTION as a hard write
- * barrier, preventing an in-flight wiki worker from racing stale plaintext back
- * into the summary after this operation completes.
+ * Summary HOLD is also materialized when a summary row does not yet exist. The
+ * ordinary writer enforces the HOLD both at read time and inside UPDATE/INSERT
+ * predicates, closing the stale-writer TOCTOU window.
  */
 export async function suppressFamiliarSourceAndSummary(args: {
   query: QueryFn;
@@ -97,55 +124,38 @@ export async function suppressFamiliarSourceAndSummary(args: {
 
   try {
     const sourceRows = (await args.query(
-      `SELECT id, message, message_embedding, author, path, creation_date FROM "${sessionTable}" ` +
+      `SELECT id, message, message_embedding, author, project, path, creation_date FROM "${sessionTable}" ` +
         `WHERE id = ${text(args.commit.sourceEventId)} LIMIT 2`,
     )) as Array<Record<string, unknown>>;
 
     if (sourceRows.length !== 1) {
-      const detail = sourceRows.length === 0
-        ? "The promoted source event is absent, so its canonical digest and summary lineage cannot be re-verified."
-        : "Multiple session rows matched the promoted sourceEventId; source suppression is ambiguous.";
-      return {
-        embedding: { surface: "EMBEDDING_INDEX", state: "FAILED", detail },
-        summary: { surface: "SUMMARY_PROJECTION", state: "FAILED", detail },
-      };
+      return failed(sourceRows.length === 0
+        ? "The promoted source event is absent, so its canonical digest and suppression lineage cannot be re-verified."
+        : "Multiple session rows matched the promoted sourceEventId; source suppression is ambiguous.");
     }
 
     const row = sourceRows[0];
     const original = parseMessage(row.message);
-    if (!original) {
-      const detail = "The promoted source session row does not contain parseable canonical event JSON.";
-      return {
-        embedding: { surface: "EMBEDDING_INDEX", state: "FAILED", detail },
-        summary: { surface: "SUMMARY_PROJECTION", state: "FAILED", detail },
-      };
-    }
-    if (original.id !== args.commit.sourceEventId) {
-      const detail = "The source row id and embedded event id disagree.";
-      return {
-        embedding: { surface: "EMBEDDING_INDEX", state: "FAILED", detail },
-        summary: { surface: "SUMMARY_PROJECTION", state: "FAILED", detail },
-      };
-    }
-    const originalDigest = sha256DigestCanonical(original);
-    if (originalDigest !== args.commit.sourceEventDigest) {
-      const detail = "The canonical source event digest does not match the authoritative promotion commit.";
-      return {
-        embedding: { surface: "EMBEDDING_INDEX", state: "FAILED", detail },
-        summary: { surface: "SUMMARY_PROJECTION", state: "FAILED", detail },
-      };
-    }
+    if (!original) return failed("The promoted source session row does not contain parseable canonical event JSON.");
+    if (original.id !== args.commit.sourceEventId) return failed("The source row id and embedded event id disagree.");
 
+    const alreadySuppressed = isBoundSuppressionTombstone(original, args.commit);
     const originalSessionId = safeSessionId(original.session_id);
     if (
       args.commit.sourceSessionId !== undefined &&
       originalSessionId !== args.commit.sourceSessionId
     ) {
-      const detail = "The source event session id does not match the authoritative promotion commit.";
-      return {
-        embedding: { surface: "EMBEDDING_INDEX", state: "FAILED", detail },
-        summary: { surface: "SUMMARY_PROJECTION", state: "FAILED", detail },
-      };
+      return failed("The source event session id does not match the authoritative promotion commit.");
+    }
+
+    if (!alreadySuppressed) {
+      if (original.type === "familiar_memory_forgotten_source") {
+        return failed("The source row contains a suppression tombstone that is not bound to this promotion/digest.");
+      }
+      const originalDigest = sha256DigestCanonical(original);
+      if (originalDigest !== args.commit.sourceEventDigest) {
+        return failed("The canonical source event digest does not match the authoritative promotion commit.");
+      }
     }
 
     const tombstone = {
@@ -156,11 +166,14 @@ export async function suppressFamiliarSourceAndSummary(args: {
       familiar_promotion_commit_id: args.commit.commitId,
       ...(originalSessionId ? { session_id: originalSessionId } : {}),
       ...(safeTimestamp(original.timestamp) ? { timestamp: safeTimestamp(original.timestamp) } : {}),
-      ...(safeOriginalType(original.type) ? { original_type: safeOriginalType(original.type) } : {}),
+      ...(safeOriginalType(alreadySuppressed ? original.original_type : original.type)
+        ? { original_type: safeOriginalType(alreadySuppressed ? original.original_type : original.type) }
+        : {}),
     } as const;
     const tombstoneDigest = sha256DigestCanonical(tombstone);
     const tombstoneBytes = Buffer.byteLength(JSON.stringify(tombstone), "utf8");
 
+    // Always normalize the tombstone and NULL the embedding, including retries.
     await args.query(
       `UPDATE "${sessionTable}" SET message = ${jsonLiteral(tombstone)}, ` +
         `message_embedding = NULL, size_bytes = ${tombstoneBytes}, ` +
@@ -169,31 +182,21 @@ export async function suppressFamiliarSourceAndSummary(args: {
     );
 
     const verifiedRows = (await args.query(
-      `SELECT id, message, message_embedding, author FROM "${sessionTable}" ` +
+      `SELECT id, message, message_embedding, author, project FROM "${sessionTable}" ` +
         `WHERE id = ${text(args.commit.sourceEventId)} LIMIT 2`,
     )) as Array<Record<string, unknown>>;
     if (verifiedRows.length !== 1) {
-      const detail = "The source event tombstone could not be uniquely read back after suppression.";
-      return {
-        embedding: { surface: "EMBEDDING_INDEX", state: "FAILED", detail },
-        summary: { surface: "SUMMARY_PROJECTION", state: "FAILED", detail },
-      };
+      return failed("The source event tombstone could not be uniquely read back after suppression.");
     }
     const verified = verifiedRows[0];
     const verifiedMessage = parseMessage(verified.message);
     if (
       !verifiedMessage ||
-      verifiedMessage.type !== "familiar_memory_forgotten_source" ||
-      verifiedMessage.forgotten !== true ||
-      verifiedMessage.original_event_digest !== args.commit.sourceEventDigest ||
-      verifiedMessage.familiar_promotion_commit_id !== args.commit.commitId ||
+      !isBoundSuppressionTombstone(verifiedMessage, args.commit) ||
+      sha256DigestCanonical(verifiedMessage) !== tombstoneDigest ||
       !isEmbeddingAbsent(verified.message_embedding)
     ) {
-      const detail = "The source event tombstone or embedding suppression failed read-back verification.";
-      return {
-        embedding: { surface: "EMBEDDING_INDEX", state: "FAILED", detail },
-        summary: { surface: "SUMMARY_PROJECTION", state: "FAILED", detail },
-      };
+      return failed("The source event tombstone or embedding suppression failed read-back verification.");
     }
 
     const embedding: FamiliarForgetSurfaceResult = {
@@ -207,7 +210,7 @@ export async function suppressFamiliarSourceAndSummary(args: {
         state: "SOURCE_TOMBSTONED_EMBEDDING_ABSENT",
       }),
       detail:
-        "The exact digest-bound source event was replaced by an audit tombstone and its live semantic embedding is absent.",
+        "The exact digest-bound source event is a normalized audit tombstone and its live semantic embedding is absent.",
     };
 
     if (!args.memoryTableName?.trim()) {
@@ -221,8 +224,10 @@ export async function suppressFamiliarSourceAndSummary(args: {
         sourceTombstoneDigest: tombstoneDigest,
       };
     }
-    const sourceSessionId = args.commit.sourceSessionId ?? originalSessionId;
+
+    const sourceSessionId = args.commit.sourceSessionId ?? safeSessionId(verifiedMessage.session_id);
     const author = typeof verified.author === "string" ? verified.author.trim() : "";
+    const project = typeof verified.project === "string" ? verified.project.trim() : "";
     if (!sourceSessionId || !author) {
       return {
         embedding,
@@ -236,36 +241,52 @@ export async function suppressFamiliarSourceAndSummary(args: {
     }
 
     const summaryPath = `/summaries/${author}/${sourceSessionId}.md`;
+    const summaryFile = `${sourceSessionId}.md`;
     const memoryTable = sqlIdent(args.memoryTableName);
-    await args.query(
+    const holdUpdate =
       `UPDATE "${memoryTable}" SET summary = '', summary_embedding = NULL, size_bytes = 0, ` +
-        `description = ${text(FAMILIAR_FORGET_HOLD_DESCRIPTION)}, ` +
-        `last_update_date = ${text(now)} WHERE path = ${text(summaryPath)}`,
-    );
-    const summaries = (await args.query(
+      `description = ${text(FAMILIAR_FORGET_HOLD_DESCRIPTION)}, ` +
+      `last_update_date = ${text(now)} WHERE path = ${text(summaryPath)}`;
+
+    // First close an existing summary/placeholder.
+    await args.query(holdUpdate);
+    let summaries = (await args.query(
       `SELECT path, summary, summary_embedding, description FROM "${memoryTable}" ` +
         `WHERE path = ${text(summaryPath)} LIMIT 2`,
     )) as Array<Record<string, unknown>>;
 
-    if (summaries.length > 1) {
+    // If no row exists, materialize a HOLD row so a writer that began before
+    // suppression cannot later INSERT a stale summary into an empty path.
+    if (summaries.length === 0) {
+      await args.query(
+        `INSERT INTO "${memoryTable}" ` +
+          `(id, path, filename, summary, summary_embedding, author, mime_type, size_bytes, project, description, agent, plugin_version, creation_date, last_update_date) ` +
+          `SELECT ${text(randomUUID())}, ${text(summaryPath)}, ${text(summaryFile)}, '', NULL, ${text(author)}, ` +
+          `'text/markdown', 0, ${text(project)}, ${text(FAMILIAR_FORGET_HOLD_DESCRIPTION)}, ` +
+          `${text("arobi_fmp_forget")}, '', ${text(now)}, ${text(now)} ` +
+          `WHERE NOT EXISTS (SELECT 1 FROM "${memoryTable}" WHERE path = ${text(summaryPath)})`,
+      );
+    }
+
+    // Repeat the HOLD update after the conditional insert to catch a stale
+    // writer that raced a normal row into the path between our first UPDATE and
+    // materialization attempt. New uploadSummary mutations carry their own HOLD
+    // predicates, so they cannot overwrite this state afterward.
+    await args.query(holdUpdate);
+    summaries = (await args.query(
+      `SELECT path, summary, summary_embedding, description FROM "${memoryTable}" ` +
+        `WHERE path = ${text(summaryPath)} LIMIT 2`,
+    )) as Array<Record<string, unknown>>;
+
+    if (summaries.length !== 1) {
       return {
         embedding,
         summary: {
           surface: "SUMMARY_PROJECTION",
           state: "FAILED",
-          detail: "Multiple wiki summary rows matched the exact source session path.",
-        },
-        sourceTombstoneDigest: tombstoneDigest,
-        summaryPath,
-      };
-    }
-    if (summaries.length === 0) {
-      return {
-        embedding,
-        summary: {
-          surface: "SUMMARY_PROJECTION",
-          state: "NOT_APPLICABLE",
-          detail: "No persisted wiki summary exists for the exact source session; the source event remains tombstoned against future generation.",
+          detail: summaries.length === 0
+            ? "The exact session summary HOLD row could not be materialized."
+            : "Multiple wiki summary rows matched the exact source session path.",
         },
         sourceTombstoneDigest: tombstoneDigest,
         summaryPath,
@@ -310,10 +331,6 @@ export async function suppressFamiliarSourceAndSummary(args: {
       summaryPath,
     };
   } catch (error) {
-    const detail = `Source/summary suppression could not be verified: ${error instanceof Error ? error.message : String(error)}`;
-    return {
-      embedding: { surface: "EMBEDDING_INDEX", state: "FAILED", detail },
-      summary: { surface: "SUMMARY_PROJECTION", state: "FAILED", detail },
-    };
+    return failed(`Source/summary suppression could not be verified: ${error instanceof Error ? error.message : String(error)}`);
   }
 }

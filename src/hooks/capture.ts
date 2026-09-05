@@ -44,6 +44,11 @@ import {
   type CapturedEventForFamiliarCandidate,
 } from "../familiar/candidate.js";
 import { FamiliarPersistence } from "../familiar/persistence.js";
+import {
+  FamiliarConsoleStore,
+  publishFamiliarMemoryConsoleSnapshotFile,
+  removeFamiliarMemoryConsoleSnapshotFile,
+} from "../familiar/console-store.js";
 import { resolveFamiliarCaptureRuntime } from "../familiar/runtime.js";
 const log = (msg: string) => _log("capture", msg);
 
@@ -238,35 +243,68 @@ async function main(): Promise<void> {
   // source of truth. Only reached after a successful INSERT above.
   appendSessionEvent(input.session_id, line);
 
-  // Familiar Memory Plane shadow capture. This runs only after the canonical
-  // source event has been redacted and durably inserted, so candidate digests
-  // bind the stored evidence rather than pre-redaction secret-bearing content.
-  // A candidate is not a promoted memory and may never authorize execution.
-  const familiarRuntime = resolveFamiliarCaptureRuntime(config);
-  if (familiarRuntime.enabled) {
-    let redactedEntry: CapturedEventForFamiliarCandidate;
-    try {
-      redactedEntry = JSON.parse(line) as CapturedEventForFamiliarCandidate;
-    } catch {
-      throw new Error("FMP capture could not parse the already-redacted canonical event");
-    }
+  // Familiar Memory Plane shadow capture. The canonical source event has
+  // already been redacted and durably inserted. Failures in this optional
+  // sidecar never roll back or corrupt source capture, but stale console output
+  // is removed so Flight Deck cannot present an old snapshot as current.
+  try {
+    const familiarRuntime = resolveFamiliarCaptureRuntime(config);
+    if (familiarRuntime.enabled) {
+      let redactedEntry: CapturedEventForFamiliarCandidate;
+      try {
+        redactedEntry = JSON.parse(line) as CapturedEventForFamiliarCandidate;
+      } catch {
+        throw new Error("FMP capture could not parse the already-redacted canonical event");
+      }
 
-    const candidate = buildFamiliarMemoryCandidate({
-      tenantId: familiarRuntime.tenantId,
-      familiarId: familiarRuntime.familiarId,
-      identityEpoch: familiarRuntime.identityEpoch,
-      event: redactedEntry,
-    });
-    const familiarPersistence = new FamiliarPersistence({
-      query: (sql) => api.query(sql),
-      workspaceId: config.workspaceId,
-      tablePrefix: familiarRuntime.tablePrefix,
-      writerAgent: input.agent_id?.trim() || "claude_code",
-      pluginVersion: PLUGIN_VERSION,
-      log,
-    });
-    const persisted = await familiarPersistence.writeCandidate(candidate);
-    log(`familiar candidate persisted id=${candidate.candidateId} digest=${persisted.digest}`);
+      const candidate = buildFamiliarMemoryCandidate({
+        tenantId: familiarRuntime.tenantId,
+        familiarId: familiarRuntime.familiarId,
+        identityEpoch: familiarRuntime.identityEpoch,
+        event: redactedEntry,
+      });
+      const familiarPersistence = new FamiliarPersistence({
+        query: (sql) => api.query(sql),
+        workspaceId: config.workspaceId,
+        tablePrefix: familiarRuntime.tablePrefix,
+        writerAgent: input.agent_id?.trim() || "claude_code",
+        pluginVersion: PLUGIN_VERSION,
+        log,
+      });
+      const persisted = await familiarPersistence.writeCandidate(candidate);
+      log(`familiar candidate persisted id=${candidate.candidateId} digest=${persisted.digest}`);
+
+      if (familiarRuntime.consoleSnapshotPath) {
+        const consoleStore = new FamiliarConsoleStore({
+          query: (sql) => api.query(sql),
+          persistence: familiarPersistence,
+        });
+        const snapshot = await consoleStore.buildSnapshot({
+          tenantId: familiarRuntime.tenantId,
+          familiarId: familiarRuntime.familiarId,
+          identityEpoch: familiarRuntime.identityEpoch,
+        });
+        await publishFamiliarMemoryConsoleSnapshotFile(
+          familiarRuntime.consoleSnapshotPath,
+          snapshot,
+        );
+        log(
+          `familiar console snapshot published state=${snapshot.continuityState} path=${familiarRuntime.consoleSnapshotPath}`,
+        );
+      }
+    }
+  } catch (error: any) {
+    const message = error?.message ?? String(error);
+    log(`familiar memory sidecar degraded: ${message}`);
+    const staleSnapshotPath = process.env.AROBI_FMP_CONSOLE_SNAPSHOT_PATH?.trim();
+    if (staleSnapshotPath) {
+      try {
+        await removeFamiliarMemoryConsoleSnapshotFile(staleSnapshotPath);
+        log("familiar console stale snapshot removed after sidecar failure");
+      } catch (removeError: any) {
+        log(`familiar console stale snapshot removal failed: ${removeError?.message ?? String(removeError)}`);
+      }
+    }
   }
 
   // Commit-driven KPI auto-extract is disabled for now — the

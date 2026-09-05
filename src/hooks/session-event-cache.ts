@@ -27,7 +27,7 @@
  */
 
 import {
-  appendFileSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync,
+  appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -81,6 +81,48 @@ export function readSessionEventCache(sessionId: string): string[] | null {
   } catch {
     // ENOENT (never captured on this machine) or any read error → DB fallback.
     return null;
+  }
+}
+
+export type SessionEventCacheErasureResult = {
+  state: "VERIFIED" | "FAILED" | "NOT_APPLICABLE";
+  detail: string;
+};
+
+/**
+ * Remove the whole local optimization cache for one session and verify absence.
+ *
+ * Familiar-memory forgetting deliberately does not rewrite one JSONL line in
+ * place: capture may still be appending, and a line-level rewrite could lose
+ * unrelated events. Removing the entire cache is safe because this file is not
+ * source of truth; the wiki worker already falls back to the database when the
+ * cache is missing/incomplete. Future events may recreate the file, but the
+ * deleted historical event is not re-appended by that future capture path.
+ */
+export function eraseSessionEventCache(sessionId: string): SessionEventCacheErasureResult {
+  const normalized = sessionId.trim();
+  if (!normalized) {
+    return { state: "NOT_APPLICABLE", detail: "No source session id was recorded for this familiar memory." };
+  }
+  if (sessionEventCacheDisabled()) {
+    return { state: "NOT_APPLICABLE", detail: "The local session event cache is disabled in this runtime." };
+  }
+
+  const path = sessionEventCachePath(normalized);
+  try {
+    if (existsSync(path)) unlinkSync(path);
+    if (existsSync(path)) {
+      return { state: "FAILED", detail: "The local session event cache still exists after deletion." };
+    }
+    return {
+      state: "VERIFIED",
+      detail: "The affected session optimization cache is absent; source-of-truth history remains in the database.",
+    };
+  } catch (error) {
+    return {
+      state: "FAILED",
+      detail: `The local session event cache could not be erased: ${error instanceof Error ? error.message : String(error)}`,
+    };
   }
 }
 

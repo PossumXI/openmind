@@ -1,5 +1,6 @@
 import { buildContextUseReceipt } from "./context-use.js";
 import { sha256DigestCanonical } from "./canonicalize.js";
+import type { FamiliarPayloadOpenResult } from "./payload-vault.js";
 import type {
   ContextUseReceiptV1,
   Digest,
@@ -10,6 +11,15 @@ export interface FamiliarContextUseSink {
   writeContextUse(value: unknown): Promise<{ rowId: string; digest: Digest }>;
 }
 
+type ContextUseRetrievalResult = FamiliarRetrievalResult & {
+  /**
+   * Committed recall supplies the protected-payload verification state here.
+   * Legacy/metadata-only retrieval may omit it, but such a result is not
+   * eligible to be recorded as opened or relied upon.
+   */
+  payload?: FamiliarPayloadOpenResult;
+};
+
 export interface RecordRetrievedContextUseInput {
   tenantId: string;
   familiarId: string;
@@ -17,7 +27,7 @@ export interface RecordRetrievedContextUseInput {
   purpose: unknown;
   proposal: unknown;
   familiarContinuityDigest: Digest;
-  retrieved: readonly FamiliarRetrievalResult[];
+  retrieved: readonly ContextUseRetrievalResult[];
   opened: readonly Digest[];
   reliedUpon: readonly Digest[];
   rejectedOrConflicting?: readonly Digest[];
@@ -84,14 +94,30 @@ function ensureSelectedFromRetrieved(
   }
 }
 
+function ensureSelectedFromAvailablePayload(
+  selected: readonly Digest[],
+  available: ReadonlySet<Digest>,
+  label: string,
+): void {
+  for (const digest of selected) {
+    if (!available.has(digest)) {
+      throw new Error(
+        `FMP ${label} digest cannot be recorded because its protected payload was not verified AVAILABLE`,
+      );
+    }
+  }
+}
+
 /**
  * Converts an actual scoped retrieval result into the evidence record for a
  * consequential proposal.
  *
  * The caller cannot invent the `retrieved` set: it is derived from the
  * structured retrieval results supplied here. Opened/relied/rejected digests
- * must all refer to that exact set, and the existing ContextUseReceipt
- * validator additionally enforces reliedUpon/rejected ⊆ opened ⊆ retrieved.
+ * must all refer to that exact set. In addition, opened/relied entries must
+ * come from committed results whose protected payload was actually verified
+ * AVAILABLE; metadata-only, UNAVAILABLE, and INCONCLUSIVE results can be
+ * recorded only as retrieved/rejected evidence.
  *
  * This record remains evidence only. It carries no approval, permission, route
  * grant, consent, role, or execution capability.
@@ -104,8 +130,16 @@ export async function recordRetrievedContextUse(
 
   const retrieved = input.retrieved.map((candidate) => candidate.artifactDigest);
   const retrievedSet = new Set(retrieved);
+  const availablePayloadSet = new Set(
+    input.retrieved
+      .filter((candidate) => candidate.payload?.state === "AVAILABLE")
+      .map((candidate) => candidate.artifactDigest),
+  );
+
   ensureSelectedFromRetrieved(input.opened, retrievedSet, "opened");
   ensureSelectedFromRetrieved(input.reliedUpon, retrievedSet, "reliedUpon");
+  ensureSelectedFromAvailablePayload(input.opened, availablePayloadSet, "opened");
+  ensureSelectedFromAvailablePayload(input.reliedUpon, availablePayloadSet, "reliedUpon");
   ensureSelectedFromRetrieved(
     input.rejectedOrConflicting ?? [],
     retrievedSet,

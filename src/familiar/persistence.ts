@@ -280,22 +280,26 @@ export class FamiliarPersistence {
   }
 
   /**
-   * Read current canonical memory rows for exactly one tenant + familiar.
-   * Scope is applied in SQL before any application-level filtering/ranking.
-   * Latest revision wins per memory id; non-current support states are omitted.
+   * Read current canonical memory rows for exactly one tenant + familiar +
+   * identity epoch. Scope is applied in SQL before any application-level
+   * filtering/ranking. Latest revision wins per memory id within that epoch;
+   * non-current support states are omitted.
    */
   async readCurrentMemories(args: {
     tenantId: string;
     familiarId: string;
+    identityEpoch: number;
   }): Promise<FamiliarMemoryArtifactV1[]> {
     if (!args.tenantId.trim() || !args.familiarId.trim()) {
       throw new Error("FMP scoped read requires non-empty tenantId and familiarId");
     }
+    const identityEpoch = integer(args.identityEpoch);
     const tables = await this.ensure();
     const table = sqlIdent(tables.memories);
     const query =
       `SELECT memory_id, revision, support_state, canonical_json FROM "${table}" ` +
       `WHERE tenant_id = ${text(args.tenantId)} AND familiar_id = ${text(args.familiarId)} ` +
+      `AND identity_epoch = ${identityEpoch} ` +
       `ORDER BY memory_id ASC, revision DESC, created_at DESC`;
     const rows = (await this.options.query(query)) as Array<Record<string, unknown>>;
     const seen = new Set<string>();
@@ -324,7 +328,11 @@ export class FamiliarPersistence {
       } catch {
         continue;
       }
-      if (parsed.tenantId !== args.tenantId || parsed.familiarId !== args.familiarId) {
+      if (
+        parsed.tenantId !== args.tenantId ||
+        parsed.familiarId !== args.familiarId ||
+        parsed.identityEpoch !== args.identityEpoch
+      ) {
         // Defense in depth against malformed/corrupted rows despite SQL scope.
         continue;
       }

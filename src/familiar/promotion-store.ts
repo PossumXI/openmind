@@ -29,6 +29,7 @@ export const FAMILIAR_PROMOTION_COMMIT_COLUMNS: readonly ColumnDef[] = Object.fr
   { name: "candidate_id", sql: "TEXT NOT NULL DEFAULT ''" },
   { name: "candidate_digest", sql: "TEXT NOT NULL DEFAULT ''" },
   { name: "source_event_id", sql: "TEXT NOT NULL DEFAULT ''" },
+  { name: "source_event_digest", sql: "TEXT NOT NULL DEFAULT ''" },
   { name: "source_session_id", sql: "TEXT NOT NULL DEFAULT ''" },
   { name: "memory_id", sql: "TEXT NOT NULL DEFAULT ''" },
   { name: "memory_digest", sql: "TEXT NOT NULL DEFAULT ''" },
@@ -51,6 +52,7 @@ export type FamiliarPromotionCommitV1 = {
   candidateId: string;
   candidateDigest: Digest;
   sourceEventId: string;
+  sourceEventDigest: Digest;
   sourceSessionId?: string;
   memoryId: string;
   memoryDigest: Digest;
@@ -148,7 +150,12 @@ export function assertFamiliarPromotionCommitV1(
   if (!Number.isSafeInteger(commit.identityEpoch) || (commit.identityEpoch as number) < 0) {
     throw new Error("FMP promotion commit identityEpoch must be a non-negative safe integer");
   }
-  for (const key of ["candidateDigest", "memoryDigest", "mutationDigest"] as const) {
+  for (const key of [
+    "candidateDigest",
+    "sourceEventDigest",
+    "memoryDigest",
+    "mutationDigest",
+  ] as const) {
     if (!isDigest(commit[key])) throw new Error(`FMP promotion commit ${key} is invalid`);
   }
 
@@ -194,6 +201,12 @@ export function assertFamiliarPromotionCommitV1(
   ) {
     throw new Error("FMP promotion commit mutation must bind exactly the promoted candidate digest");
   }
+  if (!memory.sourceArtifacts.includes(commit.sourceEventDigest)) {
+    throw new Error("FMP promotion commit sourceEventDigest is not preserved in memory source artifacts");
+  }
+  if (!mutation.evidenceDigests.includes(commit.sourceEventDigest)) {
+    throw new Error("FMP promotion commit sourceEventDigest is not preserved in mutation evidence");
+  }
 }
 
 export function buildFamiliarPromotionCommit(
@@ -215,6 +228,9 @@ export function buildFamiliarPromotionCommit(
   if (mutationDigest !== plan.mutationDigest) {
     throw new Error("FMP promotion plan mutationDigest is stale or inconsistent");
   }
+  if (!isDigest(plan.candidate.originDigest)) {
+    throw new Error("FMP promotion candidate source event digest is invalid");
+  }
 
   const commit: FamiliarPromotionCommitV1 = {
     kind: "arobi.familiar-promotion-commit",
@@ -226,6 +242,7 @@ export function buildFamiliarPromotionCommit(
     candidateId: plan.candidate.candidateId,
     candidateDigest,
     sourceEventId: plan.candidate.sourceEventId,
+    sourceEventDigest: plan.candidate.originDigest,
     ...(plan.candidate.sourceSessionId ? { sourceSessionId: plan.candidate.sourceSessionId } : {}),
     memoryId: plan.memory.memoryId,
     memoryDigest,
@@ -285,9 +302,9 @@ export class FamiliarPromotionCommitStore {
 
   /**
    * Persist one authoritative promotion commit as exactly one database row.
-   * This is the durable source of truth for candidate -> memory -> mutation.
-   * Separate memory/mutation rows, when materialized, are rebuildable projections
-   * and must not be treated as proof of promotion without a matching commit.
+   * This is the durable source of truth for candidate -> source event -> memory
+   * -> PROMOTE mutation. Separate memory/mutation rows are rebuildable
+   * projections and must not be treated as proof without a matching commit.
    */
   async write(plan: FamiliarPromotionPlan): Promise<PersistedFamiliarPromotionCommit> {
     const table = await this.ensure();
@@ -303,6 +320,7 @@ export class FamiliarPromotionCommitStore {
       candidate_id: text(commit.candidateId),
       candidate_digest: text(commit.candidateDigest),
       source_event_id: text(commit.sourceEventId),
+      source_event_digest: text(commit.sourceEventDigest),
       source_session_id: text(commit.sourceSessionId ?? ""),
       memory_id: text(commit.memoryId),
       memory_digest: text(commit.memoryDigest),

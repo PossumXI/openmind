@@ -2,6 +2,10 @@ import type { QueryFn } from "../deeplake-schema.js";
 import { eraseSessionEventCache } from "../hooks/session-event-cache.js";
 import { sqlIdent, sqlStr } from "../utils/sql.js";
 import { sha256DigestCanonical } from "./canonicalize.js";
+import type {
+  FamiliarForgetCommitStore,
+  PersistedFamiliarForgetCommit,
+} from "./forget-store.js";
 import {
   finalizeFamiliarForget,
   type FamiliarForgetFinalization,
@@ -30,6 +34,12 @@ export type FamiliarControlledForgetWorkerInput = {
   graphProjection?: FamiliarProjectionErasureAdapter;
   summaryProjection?: FamiliarProjectionErasureAdapter;
   createdAt?: string;
+};
+
+export type DurableFamiliarForgetResult = {
+  surfaces: FamiliarForgetSurfaceResult[];
+  finalization: FamiliarForgetFinalization;
+  persistence?: PersistedFamiliarForgetCommit;
 };
 
 function text(value: string): string {
@@ -213,4 +223,24 @@ export async function runControlledFamiliarForget(
     createdAt: input.createdAt,
   });
   return { surfaces, finalization };
+}
+
+/**
+ * Execute controlled erasure and append the authoritative forget commit only
+ * when every controlled surface has verified. INCOMPLETE never writes a
+ * tombstone ledger row. If the ledger append itself fails, the error propagates:
+ * erased payload/index/cache state remains safe but the system must retry and
+ * must not report durable forgetting until this function returns persistence.
+ */
+export async function runAndCommitControlledFamiliarForget(args: {
+  worker: FamiliarControlledForgetWorkerInput;
+  forgets: FamiliarForgetCommitStore;
+}): Promise<DurableFamiliarForgetResult> {
+  const result = await runControlledFamiliarForget(args.worker);
+  if (result.finalization.state !== "VERIFIED") return result;
+  const persistence = await args.forgets.write({
+    promotion: args.worker.commit,
+    finalization: result.finalization,
+  });
+  return { ...result, persistence };
 }

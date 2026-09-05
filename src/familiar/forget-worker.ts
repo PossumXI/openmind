@@ -10,6 +10,7 @@ import {
   type FamiliarForgetFinalization,
   type FamiliarForgetSurfaceResult,
 } from "./forgetting.js";
+import { currentOpenMindGraphProjectionAdapter } from "./graph-projection.js";
 import type { FamiliarPayloadVault } from "./payload-vault.js";
 import {
   assertFamiliarPromotionCommitV1,
@@ -33,6 +34,14 @@ export type FamiliarControlledForgetWorkerInput = {
   reasonDigest: Digest;
   policyEpoch: number;
   invalidatedDerivedDigests?: readonly Digest[];
+  /**
+   * Optional replacement for the CURRENT graph-profile classifier.
+   *
+   * With no override, OpenMind's current `hivemind-codebase-graph` profile is
+   * explicitly classified NOT_APPLICABLE because it only ingests repository
+   * source/code structure. A future memory/entity/conversation graph MUST pass
+   * its own adapter here; it must not silently inherit the codebase result.
+   */
   graphProjection?: FamiliarProjectionErasureAdapter;
   /**
    * Optional additional summary-derived surface. This can only narrow the
@@ -84,24 +93,11 @@ function eraseLiveCache(commit: FamiliarPromotionCommitV1): FamiliarForgetSurfac
   };
 }
 
-function missingProjectionAdapter(surface: "GRAPH_PROJECTION"): FamiliarForgetSurfaceResult {
-  return {
-    surface,
-    state: "FAILED",
-    detail:
-      `${surface} erasure adapter is not wired. Arobi will not claim forgetting until derived-lineage deletion is executable and verified.`,
-  };
-}
-
 async function runProjectionAdapter(
   surface: "GRAPH_PROJECTION" | "SUMMARY_PROJECTION",
-  adapter: FamiliarProjectionErasureAdapter | undefined,
+  adapter: FamiliarProjectionErasureAdapter,
   commit: FamiliarPromotionCommitV1,
 ): Promise<FamiliarForgetSurfaceResult> {
-  if (!adapter) {
-    if (surface === "GRAPH_PROJECTION") return missingProjectionAdapter(surface);
-    throw new Error("summary projection adapter is optional and must not be called when absent");
-  }
   try {
     const result = await adapter.erase(commit);
     if (result.surface !== surface) {
@@ -170,10 +166,12 @@ async function enforceAdditionalSummaryProjection(args: {
  * Execute every currently-known Arobi-controlled forgetting surface and then
  * delegate final truth-state construction to finalizeFamiliarForget().
  *
- * The source event + source-session wiki summary are handled by the built-in
- * digest-bound suppression path. GRAPH_PROJECTION remains a hard gate until the
- * production graph's derivation semantics are explicitly wired. No missing
- * controlled surface is converted into a synthetic PASS.
+ * - source event + source-session wiki summary: built-in digest-bound suppression;
+ * - current OpenMind graph: explicit codebase-only NOT_APPLICABLE classifier;
+ * - future memory/entity graph: caller must supply a distinct fail-closed adapter;
+ * - live cache: session cache removal/absence evidence.
+ *
+ * No missing/new controlled surface may be converted into a synthetic PASS.
  */
 export async function runControlledFamiliarForget(
   input: FamiliarControlledForgetWorkerInput,
@@ -194,7 +192,7 @@ export async function runControlledFamiliarForget(
   const embedding = sourceSuppression.embedding;
   const graph = await runProjectionAdapter(
     "GRAPH_PROJECTION",
-    input.graphProjection,
+    input.graphProjection ?? currentOpenMindGraphProjectionAdapter,
     input.commit,
   );
   const summary = await enforceAdditionalSummaryProjection({

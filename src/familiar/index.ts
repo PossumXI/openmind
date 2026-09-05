@@ -11,3 +11,4 @@ export * from "./retrieval.js";
 export * from "./retrieval-context.js";
 export * from "./runtime.js";
 export * from "./promotion.js";
+export * from "./forgetting.js";

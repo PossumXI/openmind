@@ -100,7 +100,13 @@ function trustForCapturedEvent(event: CapturedEventForFamiliarCandidate): Memory
     case "assistant_message":
       return "DERIVED";
     case "tool_call":
-      return "OBSERVED";
+      // Tool output may originate from browsers, web fetchers, MCP servers,
+      // third-party APIs, or other untrusted remote systems. Capture has no
+      // trusted-origin proof at this boundary, so fail closed and preserve it
+      // as EXTERNAL_UNTRUSTED. A later trusted verifier/origin policy may
+      // promote evidence, but the caller/tool response cannot self-promote to
+      // OBSERVED or any stronger trust class merely by being captured.
+      return "EXTERNAL_UNTRUSTED";
   }
 }
 

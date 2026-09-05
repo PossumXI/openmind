@@ -44,9 +44,8 @@ export interface UploadParams {
 
 export interface UploadResult {
   /**
-   * Which write path ran. `"skip"` means the finalize-wins guard refused to
-   * overwrite an already-finalized row with a placeholder/stub — no SQL was
-   * sent.
+   * Which write path ran. `"skip"` means a write guard refused to mutate the
+   * existing row — no SQL mutation was sent.
    */
   path: "update" | "insert" | "skip";
   sql: string;
@@ -78,23 +77,39 @@ export function extractDescription(text: string): string {
 export const PLACEHOLDER_DESCRIPTION = "in progress";
 
 /**
- * Is `desc` a finalized (real) description? A finalized row has a description
- * that is non-empty and is NOT the SessionStart placeholder sentinel.
+ * Controlled-forgetting regeneration barrier.
  *
- * Proactive recall only surfaces rows where `description <> 'in progress'`
- * AND `summary <> ''`, so "finalized" here matches exactly what recall needs.
+ * `source-suppression.ts` sets the exact source-session summary to this state
+ * only after the promoted source event has been digest-verified and replaced by
+ * a non-secret audit tombstone. Ordinary/late wiki workers MUST NOT overwrite
+ * this row, even with a fully finalized summary, because their input may have
+ * been captured before source suppression completed.
+ *
+ * A later governed regeneration workflow may clear this sentinel explicitly
+ * after rebuilding from the tombstoned source history. `uploadSummary()` itself
+ * never clears it.
+ */
+export const FAMILIAR_FORGET_HOLD_DESCRIPTION = "familiar-memory-forget-hold";
+
+/**
+ * Is `desc` a finalized (real) description? A finalized row has a description
+ * that is non-empty and is neither a SessionStart placeholder nor a controlled
+ * forgetting HOLD sentinel.
+ *
+ * Proactive recall only surfaces normal completed summaries; a forgetting HOLD
+ * is deliberately not considered finalized/recallable state.
  */
 export function isFinalizedDescription(desc: unknown): boolean {
   if (typeof desc !== "string") return false;
   const d = desc.trim();
-  return d !== "" && d !== PLACEHOLDER_DESCRIPTION;
+  return d !== "" && d !== PLACEHOLDER_DESCRIPTION && d !== FAMILIAR_FORGET_HOLD_DESCRIPTION;
 }
 
 /**
  * Is the EXISTING row (`summary`, `description`) a FINALIZED summary — i.e.
  * one that proactive recall can surface? Requires a non-empty summary body AND
- * a real (non-placeholder) description. Used as the finalize-wins guard: a
- * finalized row must never be clobbered back to a placeholder/stub.
+ * a real (non-placeholder/non-HOLD) description. Used as the finalize-wins
+ * guard: a finalized row must never be clobbered back to a placeholder/stub.
  */
 export function isFinalizedRow(summary: unknown, description: unknown): boolean {
   const hasSummary = typeof summary === "string" && summary.trim() !== "";
@@ -140,6 +155,17 @@ export async function uploadSummary(query: QueryFn, params: UploadParams): Promi
   );
 
   if (existing.length > 0) {
+    const existingDescription = existing[0]["description"];
+
+    // FORGET-HOLD WINS over every ordinary wiki writer, including a writer
+    // that already generated a valid finalized summary before suppression.
+    // This closes the race where stale plaintext could be reintroduced after
+    // the source event was forgotten. Only a separate governed regeneration
+    // path may clear the sentinel.
+    if (existingDescription === FAMILIAR_FORGET_HOLD_DESCRIPTION) {
+      return { path: "skip", sql: "", descLength: desc.length, summaryLength: text.length };
+    }
+
     // FINALIZE-WINS: a finalized row (real summary + non-placeholder
     // description) must never be clobbered back to a placeholder/stub.
     //
@@ -151,7 +177,7 @@ export async function uploadSummary(query: QueryFn, params: UploadParams): Promi
     // a real summary body (a populated "## What Happened"); a non-finalized
     // (stub) write is rejected when the existing row is already finalized.
     const incomingFinalized = isFinalizedSummaryText(text);
-    const existingFinalized = isFinalizedRow(existing[0]["summary"], existing[0]["description"]);
+    const existingFinalized = isFinalizedRow(existing[0]["summary"], existingDescription);
     if (!incomingFinalized && existingFinalized) {
       return { path: "skip", sql: "", descLength: desc.length, summaryLength: text.length };
     }

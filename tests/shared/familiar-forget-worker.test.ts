@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { QueryFn } from "../../src/deeplake-schema.js";
 import {
   FAMILIAR_PAYLOAD_VAULT_COLUMNS,
   FamiliarPayloadVault,
@@ -89,7 +90,7 @@ function database() {
     description: "completed summary",
   }];
 
-  const query = async (statement: string) => {
+  const query: QueryFn = async (statement: string) => {
     if (statement.includes("information_schema.columns")) {
       return FAMILIAR_PAYLOAD_VAULT_COLUMNS.map((column) => ({ column_name: column.name }));
     }
@@ -169,7 +170,7 @@ function verifiedGraph() {
   };
 }
 
-function vault(query: (sql: string) => Promise<unknown>) {
+function vault(query: QueryFn) {
   return new FamiliarPayloadVault({
     query,
     workspaceId: "workspace-1",

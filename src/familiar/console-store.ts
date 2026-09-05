@@ -166,6 +166,10 @@ export class FamiliarConsoleStore {
   async buildSnapshot(
     request: FamiliarConsoleSnapshotRequest,
   ): Promise<FamiliarMemoryConsoleSnapshotV1> {
+    // Resolve/heal the additive FMP schema once before fan-out. Without this
+    // preflight, three first-use readers can race through lazy schema healing.
+    await this.options.persistence.ensure();
+
     const [memories, continuity, latestTombstone] = await Promise.all([
       this.readCurrentMemories(request),
       this.readLatestContinuity(request),

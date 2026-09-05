@@ -1,10 +1,7 @@
 import { sha256DigestCanonical } from "./canonicalize.js";
-import type { FamiliarForgetCommitStore } from "./forget-store.js";
-import type { FamiliarPayloadVault, FamiliarPayloadOpenResult } from "./payload-vault.js";
-import type {
-  FamiliarPromotionCommitStore,
-  FamiliarPromotionCommitV1,
-} from "./promotion-store.js";
+import type { FamiliarForgetCommitV1 } from "./forget-store.js";
+import type { FamiliarPayloadOpenResult } from "./payload-vault.js";
+import type { FamiliarPromotionCommitV1 } from "./promotion-store.js";
 import {
   retrieveFamiliarMemories,
   type FamiliarRetrievalRanker,
@@ -12,6 +9,26 @@ import {
   type FamiliarRetrievalResult,
 } from "./retrieval.js";
 import type { Digest } from "./types.js";
+
+export interface FamiliarPromotionCommitSource {
+  read(args: {
+    tenantId: string;
+    familiarId: string;
+    identityEpoch: number;
+  }): Promise<FamiliarPromotionCommitV1[]>;
+}
+
+export interface FamiliarForgetCommitSource {
+  read(args: {
+    tenantId: string;
+    familiarId: string;
+    identityEpoch: number;
+  }): Promise<FamiliarForgetCommitV1[]>;
+}
+
+export interface FamiliarPayloadOpenSource {
+  open(commit: FamiliarPromotionCommitV1): Promise<FamiliarPayloadOpenResult>;
+}
 
 export type CommittedFamiliarRetrievalResult = FamiliarRetrievalResult & {
   promotionCommitId: string;
@@ -24,6 +41,11 @@ export interface CommittedFamiliarRetrievalRequest extends FamiliarRetrievalRequ
 /**
  * Recall only from authoritative promotion commits that do not have a verified
  * authoritative forget commit.
+ *
+ * Sources are deliberately structural interfaces rather than concrete write-
+ * oriented store classes. Production write paths may use the normal stores;
+ * synchronous recall/shadow paths may use SELECT-only adapters without schema
+ * `ensure()`/DDL side effects.
  *
  * The forget ledger is a required dependency, not an optional enhancement: a
  * caller may not bypass forgetting merely by omitting the tombstone source.
@@ -38,9 +60,9 @@ export interface CommittedFamiliarRetrievalRequest extends FamiliarRetrievalRequ
  * `payload.state === "AVAILABLE"`.
  */
 export async function retrieveCommittedFamiliarMemories(args: {
-  commits: FamiliarPromotionCommitStore;
-  forgets: FamiliarForgetCommitStore;
-  vault: FamiliarPayloadVault;
+  commits: FamiliarPromotionCommitSource;
+  forgets: FamiliarForgetCommitSource;
+  vault: FamiliarPayloadOpenSource;
   request: CommittedFamiliarRetrievalRequest;
   ranker?: FamiliarRetrievalRanker;
 }): Promise<CommittedFamiliarRetrievalResult[]> {

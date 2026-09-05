@@ -61,7 +61,6 @@ export type FamiliarForgetComplete = {
 
 export type FamiliarForgetFinalization = FamiliarForgetIncomplete | FamiliarForgetComplete;
 
-const CONTROLLED = new Set<string>(AROBI_CONTROLLED_FORGET_SURFACES);
 const VALID_STATES = new Set<ControlledErasureState>([
   "VERIFIED",
   "FAILED",
@@ -82,12 +81,15 @@ function nonNegativeInteger(value: number, label: string): number {
   return value;
 }
 
-function uniqueDigests(values: readonly Digest[], label: string): Digest[] {
+function uniqueDigests(values: readonly Digest[], label: string, rejectDuplicates = true): Digest[] {
   const out: Digest[] = [];
   const seen = new Set<string>();
   for (const value of values) {
     if (!isDigest(value)) throw new Error(`FMP forgetting ${label} contains an invalid digest`);
-    if (seen.has(value)) throw new Error(`FMP forgetting ${label} contains a duplicate digest`);
+    if (seen.has(value)) {
+      if (rejectDuplicates) throw new Error(`FMP forgetting ${label} contains a duplicate digest`);
+      continue;
+    }
     seen.add(value);
     out.push(value);
   }
@@ -173,6 +175,13 @@ export function finalizeFamiliarForget(
     input.invalidatedDerivedDigests ?? [],
     "invalidatedDerivedDigests",
   );
+  const surfaceEvidenceDigests = uniqueDigests(
+    input.surfaces
+      .map((surface) => surface.verificationDigest)
+      .filter((value): value is Digest => value !== undefined),
+    "surface verification evidence",
+    false,
+  );
 
   const mutation: MemoryMutationReceiptV1 = {
     kind: "arobi.familiar-memory-mutation",
@@ -186,9 +195,7 @@ export function finalizeFamiliarForget(
     reasonDigest: input.reasonDigest,
     policyEpoch: input.policyEpoch,
     previousDigests: [memoryDigest],
-    evidenceDigests: input.surfaces
-      .map((surface) => surface.verificationDigest)
-      .filter((value): value is Digest => value !== undefined),
+    evidenceDigests: surfaceEvidenceDigests,
     createdAt,
   };
   assertMemoryMutationReceiptV1(mutation);

@@ -219,3 +219,14 @@ export async function publishFamiliarMemoryConsoleSnapshotFile(
     throw error;
   }
 }
+
+/**
+ * Remove the last published local snapshot when its producer can no longer
+ * establish current state. This prevents JAWS from treating stale evidence as
+ * current merely because an old file still exists.
+ */
+export async function removeFamiliarMemoryConsoleSnapshotFile(path: string): Promise<void> {
+  const target = path.trim();
+  if (!target) return;
+  await rm(target, { force: true });
+}

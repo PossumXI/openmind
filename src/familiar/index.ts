@@ -15,4 +15,5 @@ export * from "./promotion.js";
 export * from "./promotion-store.js";
 export * from "./payload-vault.js";
 export * from "./forgetting.js";
+export * from "./forget-store.js";
 export * from "./forget-worker.js";

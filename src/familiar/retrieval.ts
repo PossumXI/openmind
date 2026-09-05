@@ -11,6 +11,7 @@ export interface FamiliarRetrievalSource {
   readCurrentMemories(args: {
     tenantId: string;
     familiarId: string;
+    identityEpoch: number;
   }): Promise<FamiliarMemoryArtifactV1[]>;
 }
 
@@ -117,12 +118,13 @@ export async function retrieveFamiliarMemories(
   const nowMillis = parseNow(request.now);
   const requireMayInform = request.requireMayInform ?? true;
 
-  // The canonical persistence adapter must apply tenant/familiar scope in its
-  // SQL query before returning any rows. We still re-check scope below as
-  // defense in depth against corruption or an alternate source implementation.
+  // The canonical persistence adapter applies tenant/familiar/identity-epoch
+  // scope in SQL before returning any rows. We still re-check below as defense
+  // in depth against corruption or an alternate source implementation.
   const rows = await source.readCurrentMemories({
     tenantId: request.tenantId,
     familiarId: request.familiarId,
+    identityEpoch: request.identityEpoch,
   });
 
   const filtered: FamiliarRetrievalCandidate[] = [];

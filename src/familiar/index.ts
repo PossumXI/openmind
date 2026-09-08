@@ -7,6 +7,7 @@ export * from "./console.js";
 export * from "./console-store.js";
 export * from "./candidate.js";
 export * from "./context-use.js";
+export * from "./context-boundary.js";
 export * from "./retrieval.js";
 export * from "./retrieval-context.js";
 export * from "./committed-retrieval.js";

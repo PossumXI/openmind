@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { sha256DigestCanonical } from "./canonicalize.js";
-import { isDigest } from "./validate.js";
+import { assertContextUseReceiptV1, isDigest } from "./validate.js";
 import type { ContextUseReceiptV1, Digest } from "./types.js";
 
 export type ContextCompartment =
@@ -25,9 +25,12 @@ export type ContextBoundaryDecision =
   | "HOLD"
   | "REJECT";
 
+export type ContextProcessorStatus = "VALID" | "INVALID" | "UNVERIFIED";
+
 export interface ContextBoundaryProcessorRef {
   identity: string;
   version: string;
+  status: ContextProcessorStatus;
 }
 
 export interface ContextBoundaryValidatorRef extends ContextBoundaryProcessorRef {
@@ -97,6 +100,13 @@ function uniqueStrings(values: readonly string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))].sort();
 }
 
+function validateProcessorStatus(status: ContextProcessorStatus, label: string): ContextProcessorStatus {
+  if (status !== "VALID" && status !== "INVALID" && status !== "UNVERIFIED") {
+    throw new Error(`FMP context boundary requires valid ${label}.status`);
+  }
+  return status;
+}
+
 export function contextUseReceiptV11Digest(receipt: ContextUseReceiptV11): Digest {
   return sha256DigestCanonical(receipt);
 }
@@ -105,11 +115,14 @@ export function contextUseReceiptV11Digest(receipt: ContextUseReceiptV11): Diges
  * CONTEXT-INJECTION invariant:
  * - high-risk paths never permit raw external/tool/memory content to cross into
  *   a parent-agent compartment;
- * - only a schema-validated derived value may cross;
- * - stale boundary evidence is held;
+ * - only a successfully sanitized and schema-validated derived value may cross;
+ * - stale or unverified boundary evidence is held;
+ * - invalid boundary evidence is rejected;
  * - context evidence never grants authority.
  */
 export function buildContextUseReceiptV11(input: ContextBoundaryInput): ContextUseReceiptV11 {
+  assertContextUseReceiptV1(input.parentReceipt);
+
   const nowIso = input.createdAt ?? new Date().toISOString();
   const now = validTime(nowIso, "createdAt");
   const freshUntil = validTime(input.freshUntil, "freshUntil");
@@ -125,15 +138,17 @@ export function buildContextUseReceiptV11(input: ContextBoundaryInput): ContextU
   const sanitizer = {
     identity: nonEmpty(input.sanitizer.identity, "sanitizer.identity"),
     version: nonEmpty(input.sanitizer.version, "sanitizer.version"),
+    status: validateProcessorStatus(input.sanitizer.status, "sanitizer"),
   };
   const validator = {
     identity: nonEmpty(input.validator.identity, "validator.identity"),
     version: nonEmpty(input.validator.version, "validator.version"),
+    status: validateProcessorStatus(input.validator.status, "validator"),
     schemaDigest: input.validator.schemaDigest,
   };
 
   let decision: ContextBoundaryDecision = "ALLOW_SCHEMA_VALIDATED";
-  let decisionReason = "schema-validated derived value may cross the governed compartment boundary";
+  let decisionReason = "sanitized, schema-validated derived value may cross the governed compartment boundary";
 
   if (freshUntil < now) {
     decision = "HOLD";
@@ -141,13 +156,19 @@ export function buildContextUseReceiptV11(input: ContextBoundaryInput): ContextU
   } else if (input.highRiskPath && input.rawContentCrossed) {
     decision = "REJECT";
     decisionReason = "raw content cannot cross a high-risk governed context boundary";
+  } else if (sanitizer.status === "INVALID" || validator.status === "INVALID") {
+    decision = "REJECT";
+    decisionReason = "sanitization or schema validation failed";
+  } else if (sanitizer.status !== "VALID" || validator.status !== "VALID") {
+    decision = "HOLD";
+    decisionReason = "sanitization and schema validation must both be verified before context use";
   } else if (
     input.highRiskPath &&
     destinationCompartment === "PARENT_AGENT" &&
     (input.taintClass === "EXTERNAL_UNTRUSTED" || input.taintClass === "ACTIVE_CONTENT")
   ) {
     decision = "HOLD";
-    decisionReason = "untrusted or active content requires validated derivation before parent-agent context use";
+    decisionReason = "untrusted or active content requires a derived trust classification before parent-agent context use";
   }
 
   return {
@@ -176,7 +197,12 @@ export function buildContextUseReceiptV11(input: ContextBoundaryInput): ContextU
 }
 
 export function contextBoundaryAllowsUse(receipt: ContextUseReceiptV11): boolean {
-  return receipt.decision === "ALLOW_SCHEMA_VALIDATED" && !receipt.rawContentCrossed;
+  return (
+    receipt.decision === "ALLOW_SCHEMA_VALIDATED" &&
+    !receipt.rawContentCrossed &&
+    receipt.sanitizer.status === "VALID" &&
+    receipt.validator.status === "VALID"
+  );
 }
 
 export function bindContextReceiptToEffect(

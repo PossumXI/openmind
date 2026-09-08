@@ -34,10 +34,11 @@ function baseInput() {
     destinationCompartment: "PARENT_AGENT",
     allowedDerivationCompartments: ["WORKER_AGENT"],
     rawContentCrossed: false,
-    sanitizer: { identity: "context-sanitizer", version: "1.1.0" },
+    sanitizer: { identity: "context-sanitizer", version: "1.1.0", status: "VALID" as const },
     validator: {
       identity: "context-schema-validator",
       version: "1.1.0",
+      status: "VALID" as const,
       schemaDigest: digest("5"),
     },
     taintClass: "DERIVED" as const,
@@ -71,12 +72,32 @@ describe("FMP ContextUseReceipt v1.1", () => {
     expect(contextBoundaryAllowsUse(receipt)).toBe(false);
   });
 
-  it("allows only a fresh schema-validated derived value", () => {
+  it("allows only a fresh, positively sanitized and schema-validated derived value", () => {
     const receipt = buildContextUseReceiptV11(baseInput());
     expect(receipt.decision).toBe("ALLOW_SCHEMA_VALIDATED");
     expect(receipt.rawContentCrossed).toBe(false);
+    expect(receipt.sanitizer.status).toBe("VALID");
+    expect(receipt.validator.status).toBe("VALID");
     expect(contextBoundaryAllowsUse(receipt)).toBe(true);
     expect(contextUseReceiptV11Digest(receipt)).toMatch(/^sha256:[0-9a-f]{64}$/);
+  });
+
+  it("holds unverified sanitizer or validator output", () => {
+    const unverified = buildContextUseReceiptV11({
+      ...baseInput(),
+      validator: { ...baseInput().validator, status: "UNVERIFIED" as const },
+    });
+    expect(unverified.decision).toBe("HOLD");
+    expect(contextBoundaryAllowsUse(unverified)).toBe(false);
+  });
+
+  it("rejects invalid sanitizer or schema validation", () => {
+    const invalid = buildContextUseReceiptV11({
+      ...baseInput(),
+      sanitizer: { ...baseInput().sanitizer, status: "INVALID" as const },
+    });
+    expect(invalid.decision).toBe("REJECT");
+    expect(contextBoundaryAllowsUse(invalid)).toBe(false);
   });
 
   it("holds stale context boundary evidence", () => {

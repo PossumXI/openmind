@@ -1,4 +1,5 @@
-import { sha256DigestCanonical } from "./canonicalize.js";
+import { createHash } from "node:crypto";
+import { canonicalizeFamiliarValue, sha256DigestCanonical } from "./canonicalize.js";
 import { contextBoundaryAllowsUse, contextUseReceiptV11Digest, type ContextTaintClass, type ContextUseReceiptV11 } from "./context-boundary.js";
 import type { Digest } from "./types.js";
 
@@ -65,6 +66,14 @@ function uniqueSorted<T extends string>(values: readonly T[]): T[] {
   return [...new Set(values)].sort() as T[];
 }
 
+/** Matches Immaculate canonicalEffectDigest(domain, value) for JSON-safe values. */
+function arobiDomainDigest(domain: string, value: unknown): Digest {
+  const normalized = JSON.parse(JSON.stringify(value));
+  const canonical = canonicalizeFamiliarValue(normalized);
+  const hex = createHash("sha256").update(`${domain}\n${canonical}`, "utf8").digest("hex");
+  return `sha256:${hex}`;
+}
+
 function mapTaintClass(
   taintClass: ContextTaintClass,
   trustedSourceClass?: FamiliarMemoryPlaneAdapterInput["trustedSourceClass"],
@@ -90,7 +99,7 @@ function mapTaintClass(
 }
 
 export function arobiOriginLabelV1Digest(label: ArobiOriginLabelV1): Digest {
-  return sha256DigestCanonical({
+  return arobiDomainDigest("arobi/origin-label/v1", {
     ...label,
     parentOriginDigests: uniqueSorted(label.parentOriginDigests),
   });

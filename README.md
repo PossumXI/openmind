@@ -1,3 +1,6 @@
+> [!NOTE]
+> **Arobi research fork:** this repository tracks upstream Activeloop Hivemind work for memory/context research and integration evaluation. Upstream authorship, benchmarks, product claims, licensing, and branding remain with Activeloop. Arobi's current customer-facing workspace is **[Ullumii by Arobi](https://www.iorch.net/ullumii)**; this fork is not an Arobi-branded Hivemind release.
+
 <h1 align="center">
   <br>
   <a href="https://github.com/activeloopai/hivemind">

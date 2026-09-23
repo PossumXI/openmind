@@ -9,6 +9,7 @@ export * from "./candidate.js";
 export * from "./context-use.js";
 export * from "./context-boundary.js";
 export * from "./memory-plane-adapter.js";
+export * from "./authority-influence.js";
 export * from "./denied-intent.js";
 export * from "./retrieval.js";
 export * from "./retrieval-context.js";

@@ -619,6 +619,10 @@ export default defineConfig({
         "src/graph/extract/ruby.ts":         { statements: 90, branches: 75, functions: 90, lines: 90 },
         "src/graph/extract/c.ts":            { statements: 85, branches: 70, functions: 90, lines: 90 },
         "src/graph/extract/cpp.ts":          { statements: 80, branches: 60, functions: 90, lines: 85 },
+        // Familiar Memory Plane origin adapter (openmind #6 port). Pure,
+        // fully exercised by tests/shared/familiar-memory-plane-adapter.test.ts
+        // including Immaculate OriginLabelV1 golden vectors; measured 100/100/100/100.
+        "src/familiar/memory-plane-adapter.ts": { statements: 90, branches: 90, functions: 90, lines: 90 },
       },
     },
   },

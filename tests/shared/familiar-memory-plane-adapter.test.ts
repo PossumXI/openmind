@@ -10,6 +10,7 @@ import {
   type ArobiOriginLabelV1,
   type ArobiOriginSourceClass,
 } from "../../src/familiar/memory-plane-adapter.js";
+import * as familiar from "../../src/familiar/index.js";
 import type { ContextUseReceiptV1, Digest } from "../../src/familiar/types.js";
 
 const digest = (char: string): Digest => `sha256:${char.repeat(64)}` as Digest;
@@ -113,6 +114,14 @@ function adapterInput(receipt: ReturnType<typeof buildContextUseReceiptV11>) {
 }
 
 describe("Familiar -> Arobi Memory Plane compatibility adapter", () => {
+  it("is exported from the Familiar package entry point", () => {
+    expect(familiar.adaptFamiliarContextUseToMemoryPlane).toBe(adaptFamiliarContextUseToMemoryPlane);
+    expect(familiar.arobiOriginLabelV1Digest).toBe(arobiOriginLabelV1Digest);
+    expect(familiar.validateArobiOriginLabelV1).toBe(validateArobiOriginLabelV1);
+    expect(familiar.arobiOriginTransformationIsMonotone).toBe(arobiOriginTransformationIsMonotone);
+    expect(familiar.familiarTaintCanClaimOrigin).toBe(familiarTaintCanClaimOrigin);
+  });
+
   it("MEMORY-ORIGIN-LAUNDER-01 maps derived Familiar context to MODEL_DERIVED", () => {
     const receipt = buildContextUseReceiptV11(boundary({ taintClass: "DERIVED" }));
     const evidence = adaptFamiliarContextUseToMemoryPlane(adapterInput(receipt));

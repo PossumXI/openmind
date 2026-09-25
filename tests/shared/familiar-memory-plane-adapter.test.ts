@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { sha256DigestCanonical } from "./canonicalize.js";
-import { buildContextUseReceiptV11, type ContextBoundaryInput } from "./context-boundary.js";
+import { sha256DigestCanonical } from "../../src/familiar/canonicalize.js";
+import { buildContextUseReceiptV11, type ContextBoundaryInput } from "../../src/familiar/context-boundary.js";
 import {
   adaptFamiliarContextUseToMemoryPlane,
   arobiOriginLabelV1Digest,
   familiarTaintCanClaimOrigin,
-} from "./memory-plane-adapter.js";
-import type { ContextUseReceiptV1 } from "./types.js";
+} from "../../src/familiar/memory-plane-adapter.js";
+import type { ContextUseReceiptV1 } from "../../src/familiar/types.js";
 
 const parentReceipt: ContextUseReceiptV1 = {
   kind: "arobi.familiar-context-use",

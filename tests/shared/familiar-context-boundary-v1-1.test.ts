@@ -4,7 +4,9 @@ import {
   buildContextUseReceiptV11,
   contextBoundaryAllowsUse,
   contextUseReceiptV11Digest,
+  deriveContextBoundaryDecision,
 } from "../../src/familiar/context-boundary.js";
+import * as familiar from "../../src/familiar/index.js";
 import type { ContextUseReceiptV1, Digest } from "../../src/familiar/types.js";
 
 const digest = (char: string): Digest => `sha256:${char.repeat(64)}` as Digest;
@@ -118,5 +120,37 @@ describe("FMP ContextUseReceipt v1.1", () => {
     expect("allowed" in receipt).toBe(false);
     expect("approval" in receipt).toBe(false);
     expect("authorityGrant" in receipt).toBe(false);
+  });
+
+  it("builds every decision from the shared deriveContextBoundaryDecision table", () => {
+    expect(familiar.deriveContextBoundaryDecision).toBe(deriveContextBoundaryDecision);
+    const cases = [
+      {},
+      { rawContentCrossed: true },
+      { rawContentCrossed: true, highRiskPath: false },
+      { sanitizer: { ...baseInput().sanitizer, status: "INVALID" as const } },
+      { validator: { ...baseInput().validator, status: "UNVERIFIED" as const } },
+      { taintClass: "ACTIVE_CONTENT" as const },
+      { taintClass: "EXTERNAL_UNTRUSTED" as const, highRiskPath: false },
+      { freshUntil: "2026-09-07T20:00:30.000Z" },
+    ];
+    const decisions = new Set<string>();
+    for (const overrides of cases) {
+      const input = { ...baseInput(), ...overrides };
+      const receipt = buildContextUseReceiptV11(input);
+      const derived = deriveContextBoundaryDecision({
+        createdAtMs: Date.parse(input.createdAt),
+        freshUntilMs: Date.parse(input.freshUntil),
+        highRiskPath: input.highRiskPath,
+        rawContentCrossed: input.rawContentCrossed,
+        sanitizerStatus: input.sanitizer.status,
+        validatorStatus: input.validator.status,
+        destinationCompartment: input.destinationCompartment,
+        taintClass: input.taintClass,
+      });
+      expect({ decision: receipt.decision, decisionReason: receipt.decisionReason }).toEqual(derived);
+      decisions.add(receipt.decision);
+    }
+    expect([...decisions].sort()).toEqual(["ALLOW_SCHEMA_VALIDATED", "HOLD", "REJECT"]);
   });
 });

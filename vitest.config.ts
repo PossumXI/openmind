@@ -34,6 +34,11 @@ export default defineConfig({
       // agent scope. New tests for src/* modules go here; a follow-up
       // issue tracks the migration of the existing ones.
       "tests/shared/**/*.test.ts",
+      // Familiar Memory Plane contracts keep some colocated tests next to
+      // the module (e.g. src/familiar/context-boundary.test.ts). Without this
+      // glob `npm test` / CI silently skipped them. New Familiar tests should
+      // still go to tests/shared/familiar-*.test.ts.
+      "src/familiar/**/*.test.ts",
     ],
     setupFiles: ["./tests/test-setup.ts"],
     environment: "node",
@@ -619,6 +624,13 @@ export default defineConfig({
         "src/graph/extract/ruby.ts":         { statements: 90, branches: 75, functions: 90, lines: 90 },
         "src/graph/extract/c.ts":            { statements: 85, branches: 70, functions: 90, lines: 90 },
         "src/graph/extract/cpp.ts":          { statements: 80, branches: 60, functions: 90, lines: 85 },
+        // Familiar Memory Plane origin adapter (openmind #6 port). Pure,
+        // fully exercised by tests/shared/familiar-memory-plane-adapter.test.ts
+        // including Immaculate OriginLabelV1 golden vectors; measured 100/100/100/100.
+        "src/familiar/memory-plane-adapter.ts": { statements: 90, branches: 90, functions: 90, lines: 90 },
+        // Familiar authority-influence invariant + verifier (openmind #7 port).
+        // tests/shared/familiar-authority-influence.test.ts; measured 100/100/100/100.
+        "src/familiar/authority-influence.ts":  { statements: 90, branches: 90, functions: 90, lines: 90 },
       },
     },
   },

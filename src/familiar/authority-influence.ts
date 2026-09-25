@@ -1,8 +1,14 @@
-import { sha256DigestCanonical } from "./canonicalize.js";
+import { sha256DomainDigestCanonical } from "./canonicalize.js";
 import { FamiliarValidationError, isDigest } from "./validate.js";
 import type { Digest } from "./types.js";
 
 export const AUTHORITY_INFLUENCE_SCHEMA = "arobi.familiar-authority-influence.v1" as const;
+/**
+ * Domain for recordDigest, in the Immaculate canonicalEffectDigest scheme
+ * (sha256 over `${domain}\n${canonical JSON}`), so Immaculate evidence lineage
+ * can recompute and anchor the digest with its own code.
+ */
+export const AUTHORITY_INFLUENCE_DIGEST_DOMAIN = "arobi/familiar-authority-influence/v1" as const;
 
 export const CONTEXT_ONLY_AUTHORITY_SOURCES = [
   "MEMORY",
@@ -77,15 +83,19 @@ export interface FamiliarAuthorityInfluenceV1 {
   recordDigest: Digest;
 }
 
+function invalidRecord(message: string): never {
+  throw new FamiliarValidationError("FMP_INVALID_AUTHORITY_INFLUENCE", message);
+}
+
 function nonEmpty(value: string, field: string): string {
-  const normalized = value.trim();
-  if (!normalized) throw new Error(`FMP authority influence requires ${field}`);
+  const normalized = typeof value === "string" ? value.trim() : "";
+  if (!normalized) invalidRecord(`FMP authority influence requires ${field}`);
   return normalized;
 }
 
 function epoch(value: number, field: string): number {
   if (!Number.isSafeInteger(value) || value < 0) {
-    throw new Error(`FMP authority influence requires non-negative ${field}`);
+    invalidRecord(`FMP authority influence requires non-negative ${field}`);
   }
   return value;
 }
@@ -96,10 +106,21 @@ function isCanonicalTimestamp(value: string): boolean {
 }
 
 function timestamp(value: string): string {
-  if (!isCanonicalTimestamp(value)) {
-    throw new Error("FMP authority influence requires canonical evaluatedAt");
+  if (typeof value !== "string" || !isCanonicalTimestamp(value)) {
+    invalidRecord("FMP authority influence requires canonical evaluatedAt");
   }
   return value;
+}
+
+/**
+ * recordDigest of a FamiliarAuthorityInfluenceV1 body (every field except
+ * recordDigest). Public and unkeyed: anyone can recompute it, so it identifies
+ * a record but does not by itself prove who produced it.
+ */
+export function familiarAuthorityInfluenceV1Digest(
+  body: Omit<FamiliarAuthorityInfluenceV1, "recordDigest">,
+): Digest {
+  return sha256DomainDigestCanonical(AUTHORITY_INFLUENCE_DIGEST_DOMAIN, body);
 }
 
 /**
@@ -139,16 +160,20 @@ export function evaluateFamiliarAuthorityInfluence(input: {
   evaluatedAt?: string;
 }): FamiliarAuthorityInfluenceV1 {
   if (!isDigest(input.contextUseReceiptDigest)) {
-    throw new Error("FMP authority influence requires contextUseReceiptDigest");
+    invalidRecord("FMP authority influence requires contextUseReceiptDigest");
   }
   if (!REQUESTED_AUTHORITY_CHANGES.has(input.requestedAuthorityChange)) {
-    throw new Error("FMP authority influence requires recognized requestedAuthorityChange");
+    invalidRecord("FMP authority influence requires recognized requestedAuthorityChange");
+  }
+  if (!Array.isArray(input.influenceSources)) {
+    invalidRecord("FMP authority influence requires recognized influenceSources");
   }
   const influenceSources = [...new Set(input.influenceSources)];
   if (influenceSources.length === 0 || influenceSources.some((source) => !INFLUENCE_SOURCES.has(source))) {
-    throw new Error("FMP authority influence requires recognized influenceSources");
+    invalidRecord("FMP authority influence requires recognized influenceSources");
   }
-  influenceSources.sort((left, right) => left < right ? -1 : left > right ? 1 : 0);
+  // Default sort compares UTF-16 code units: the same order the verifier checks.
+  influenceSources.sort();
   // The record is frozen below; freeze the nested array too so the digested
   // source list cannot be mutated in place after evaluation.
   Object.freeze(influenceSources);
@@ -171,24 +196,45 @@ export function evaluateFamiliarAuthorityInfluence(input: {
   };
   return Object.freeze({
     ...body,
-    recordDigest: sha256DigestCanonical(body),
+    recordDigest: familiarAuthorityInfluenceV1Digest(body),
   });
 }
 
-function invalidRecord(message: string): never {
-  throw new FamiliarValidationError("FMP_INVALID_AUTHORITY_INFLUENCE", message);
+export interface AssertFamiliarAuthorityInfluenceOptions {
+  /**
+   * recordDigest as committed outside the record when it was produced (for
+   * example anchored in Immaculate evidence lineage). When supplied, the record
+   * must carry exactly this digest.
+   */
+  expectedRecordDigest?: Digest;
 }
 
 /**
- * Verifier for a stored or transported FamiliarAuthorityInfluenceV1 record.
- * It re-derives decision/reasonCode from influenceSources and
- * requestedAuthorityChange and recomputes recordDigest, so a record cannot be
- * edited after evaluation (a memory source dropped, REJECT rewritten to HOLD,
- * authorityChanged flipped). A valid record is still only Familiar-side
- * evidence: HOLD_EXTERNAL_AUTHORITY_VERIFICATION is never an admission, and
- * Immaculate remains the authority boundary.
+ * Structural and decision-table consistency check for a stored or transported
+ * FamiliarAuthorityInfluenceV1 record. It proves that the record has exactly
+ * the v1 field set with recognized enums, canonical values and
+ * `authorityChanged: false`; that decision/reasonCode follow from
+ * influenceSources and requestedAuthorityChange; and that recordDigest is the
+ * digest of the body it travels with. So an edit that is not resealed, or a
+ * reseal that leaves decision and sources disagreeing, is rejected.
+ *
+ * On its own it is NOT tamper evidence. recordDigest is a public, unkeyed
+ * digest, so a record edited consistently (for example sources, decision and
+ * reasonCode changed together from a memory-sourced REJECT to an
+ * authority-resolution HOLD) and resealed passes. Detecting that needs a
+ * commitment held outside the record: pass `options.expectedRecordDigest` and
+ * the verifier also requires recordDigest to equal it. A valid record is still
+ * only Familiar-side evidence: HOLD_EXTERNAL_AUTHORITY_VERIFICATION is never an
+ * admission, and Immaculate remains the authority boundary.
  */
-export function assertFamiliarAuthorityInfluenceV1(value: unknown): asserts value is FamiliarAuthorityInfluenceV1 {
+export function assertFamiliarAuthorityInfluenceV1(
+  value: unknown,
+  options: AssertFamiliarAuthorityInfluenceOptions = {},
+): asserts value is FamiliarAuthorityInfluenceV1 {
+  const { expectedRecordDigest } = options;
+  if (expectedRecordDigest !== undefined && !isDigest(expectedRecordDigest)) {
+    invalidRecord("expectedRecordDigest must be sha256:<64 lowercase hex>");
+  }
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     invalidRecord("record must be an object");
   }
@@ -242,10 +288,19 @@ export function assertFamiliarAuthorityInfluenceV1(value: unknown): asserts valu
     );
   }
   const { recordDigest, ...body } = record;
-  if (!isDigest(recordDigest) || recordDigest !== sha256DigestCanonical(body)) {
+  if (
+    !isDigest(recordDigest) ||
+    recordDigest !== familiarAuthorityInfluenceV1Digest(body as Omit<FamiliarAuthorityInfluenceV1, "recordDigest">)
+  ) {
     throw new FamiliarValidationError(
       "FMP_AUTHORITY_INFLUENCE_DIGEST_MISMATCH",
       "recordDigest does not match the record body",
+    );
+  }
+  if (expectedRecordDigest !== undefined && recordDigest !== expectedRecordDigest) {
+    throw new FamiliarValidationError(
+      "FMP_AUTHORITY_INFLUENCE_COMMITMENT_MISMATCH",
+      "recordDigest does not match the externally committed digest",
     );
   }
 }

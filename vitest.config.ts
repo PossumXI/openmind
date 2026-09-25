@@ -629,7 +629,7 @@ export default defineConfig({
         // including Immaculate OriginLabelV1 golden vectors; measured 100/100/100/100.
         "src/familiar/memory-plane-adapter.ts": { statements: 90, branches: 90, functions: 90, lines: 90 },
         // Familiar authority-influence invariant + verifier (openmind #7 port).
-        // tests/shared/familiar-authority-influence.test.ts; measured 100/98/100/100.
+        // tests/shared/familiar-authority-influence.test.ts; measured 100/100/100/100.
         "src/familiar/authority-influence.ts":  { statements: 90, branches: 90, functions: 90, lines: 90 },
       },
     },

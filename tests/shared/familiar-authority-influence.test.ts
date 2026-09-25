@@ -1,10 +1,33 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { sha256DigestCanonical } from "../../src/familiar/canonicalize.js";
+import { canonicalizeFamiliarValue, sha256DigestCanonical } from "../../src/familiar/canonicalize.js";
 import {
+  AUTHORITY_INFLUENCE_DIGEST_DOMAIN,
   assertFamiliarAuthorityInfluenceV1,
   evaluateFamiliarAuthorityInfluence,
+  familiarAuthorityInfluenceV1Digest,
 } from "../../src/familiar/authority-influence.js";
 import * as familiar from "../../src/familiar/index.js";
+import { FamiliarValidationError } from "../../src/familiar/validate.js";
+
+/*
+ * recordDigest of the `reject` record below, computed with Immaculate
+ * evidence-lineage canonicalEffectDigest("arobi/familiar-authority-influence/v1", body)
+ * (apps/harness/src/evidence-lineage.ts, unchanged at Immaculate main 85d3d33).
+ */
+const GOLDEN_REJECT_RECORD_DIGEST = "sha256:ac829a598b082729a2f865fdd7d6e9f1fcfb9b12be173e0e95db7da70116f139";
+
+function expectFamiliarError(run: () => unknown, code: string, message?: string): void {
+  let thrown: unknown;
+  try {
+    run();
+  } catch (error) {
+    thrown = error;
+  }
+  expect(thrown).toBeInstanceOf(FamiliarValidationError);
+  expect((thrown as FamiliarValidationError).code).toBe(code);
+  if (message !== undefined) expect((thrown as Error).message).toContain(message);
+}
 
 const base = {
   tenantId: "tenant-a",
@@ -72,6 +95,7 @@ describe("Familiar authority influence invariant", () => {
   it("is exported from the Familiar package entry point", () => {
     expect(familiar.evaluateFamiliarAuthorityInfluence).toBe(evaluateFamiliarAuthorityInfluence);
     expect(familiar.assertFamiliarAuthorityInfluenceV1).toBe(assertFamiliarAuthorityInfluenceV1);
+    expect(familiar.familiarAuthorityInfluenceV1Digest).toBe(familiarAuthorityInfluenceV1Digest);
   });
 
   it("mixed trusted and context-only sources behind an authority change fail closed", () => {
@@ -117,13 +141,25 @@ describe("Familiar authority influence invariant", () => {
     [{ authorityEpoch: 1.5 }, "non-negative authorityEpoch"],
     [{ tenantId: "   " }, "requires tenantId"],
     [{ familiarId: "" }, "requires familiarId"],
-  ])("evaluator refuses malformed input %j", (override, message) => {
-    expect(() => evaluateFamiliarAuthorityInfluence({
+    // Before these were TypeErrors from .trim() / new Set(); now the same typed error as every other path.
+    [{ tenantId: 7 }, "requires tenantId"],
+    [{ influenceSources: 5 }, "recognized influenceSources"],
+    [{ evaluatedAt: 0 }, "canonical evaluatedAt"],
+  ])("evaluator refuses malformed input %j with FamiliarValidationError", (override, message) => {
+    expectFamiliarError(() => evaluateFamiliarAuthorityInfluence({
       ...base,
       influenceSources: ["MEMORY"],
       requestedAuthorityChange: "MINT",
       ...(override as object),
-    })).toThrow(message);
+    }), "FMP_INVALID_AUTHORITY_INFLUENCE", message as string);
+  });
+
+  it("refuses an unknown authority transition with FamiliarValidationError", () => {
+    expectFamiliarError(() => evaluateFamiliarAuthorityInfluence({
+      ...base,
+      influenceSources: ["AUTHORITY_RESOLUTION"],
+      requestedAuthorityChange: "GRANT_ADMIN" as never,
+    }), "FMP_INVALID_AUTHORITY_INFLUENCE", "recognized requestedAuthorityChange");
   });
 });
 
@@ -146,18 +182,41 @@ describe("assertFamiliarAuthorityInfluenceV1", () => {
     }),
   };
 
-  /** Rebuilds a record with a correctly recomputed digest, as a forger with the digest scheme could. */
+  /** Rebuilds a record with a correctly recomputed digest, as anyone with the public digest scheme could. */
   function reseal(record: Record<string, unknown>): Record<string, unknown> {
     const { recordDigest: _old, ...body } = record;
-    return { ...body, recordDigest: sha256DigestCanonical(body) };
+    return { ...body, recordDigest: familiarAuthorityInfluenceV1Digest(body as never) };
   }
+
+  /** The reviewer's probe: memory-sourced MINT REJECT rewritten as a trusted-reference HOLD, consistently. */
+  function consistentForgery(): Record<string, unknown> {
+    return reseal({
+      ...records.reject,
+      influenceSources: ["AUTHORITY_RESOLUTION"],
+      decision: "HOLD_EXTERNAL_AUTHORITY_VERIFICATION",
+      reasonCode: "EXTERNAL_AUTHORITY_VERIFICATION_REQUIRED",
+    });
+  }
+
+  it("recordDigest is the domain-separated digest Immaculate canonicalEffectDigest computes", () => {
+    const { recordDigest, ...body } = records.reject;
+    expect(recordDigest).toBe(GOLDEN_REJECT_RECORD_DIGEST);
+    const independent = `sha256:${createHash("sha256")
+      .update(`${AUTHORITY_INFLUENCE_DIGEST_DOMAIN}\n${canonicalizeFamiliarValue(body)}`, "utf8")
+      .digest("hex")}`;
+    expect(recordDigest).toBe(independent);
+    // Not the undomained digest used before, so a record resealed with that is refused.
+    expect(recordDigest).not.toBe(sha256DigestCanonical(body));
+    expect(() => assertFamiliarAuthorityInfluenceV1({ ...body, recordDigest: sha256DigestCanonical(body) }))
+      .toThrow(/FMP_AUTHORITY_INFLUENCE_DIGEST_MISMATCH/);
+  });
 
   it.each(Object.entries(records))("accepts the evaluator's %s record", (_name, record) => {
     expect(() => assertFamiliarAuthorityInfluenceV1(record)).not.toThrow();
     expect(() => assertFamiliarAuthorityInfluenceV1(JSON.parse(JSON.stringify(record)))).not.toThrow();
   });
 
-  it("rejects a record whose memory source was dropped after evaluation", () => {
+  it("rejects an edit that was not resealed (a memory source dropped)", () => {
     const tampered = { ...records.reject, influenceSources: ["REASONING_HISTORY"] };
     expect(() => assertFamiliarAuthorityInfluenceV1(tampered)).toThrow(/FMP_AUTHORITY_INFLUENCE_DIGEST_MISMATCH/);
   });
@@ -174,6 +233,37 @@ describe("assertFamiliarAuthorityInfluenceV1", () => {
   it("rejects a resealed record that relabels memory as an authority resolution but keeps REJECT", () => {
     const forged = reseal({ ...records.reject, influenceSources: ["AUTHORITY_RESOLUTION"] });
     expect(() => assertFamiliarAuthorityInfluenceV1(forged)).toThrow(/FMP_AUTHORITY_INFLUENCE_DECISION_MISMATCH/);
+  });
+
+  it("is not tamper evidence on its own: a fully consistent reseal passes the structural check", () => {
+    const forged = consistentForgery();
+    expect(forged.recordDigest).not.toBe(records.reject.recordDigest);
+    expect(() => assertFamiliarAuthorityInfluenceV1(forged)).not.toThrow();
+  });
+
+  it("detects the consistent reseal against an externally committed recordDigest", () => {
+    const committed = records.reject.recordDigest;
+    expectFamiliarError(
+      () => assertFamiliarAuthorityInfluenceV1(consistentForgery(), { expectedRecordDigest: committed }),
+      "FMP_AUTHORITY_INFLUENCE_COMMITMENT_MISMATCH",
+    );
+    expect(() => assertFamiliarAuthorityInfluenceV1(records.reject, { expectedRecordDigest: committed })).not.toThrow();
+    // An un-resealed edit still reports the body mismatch first.
+    expectFamiliarError(
+      () => assertFamiliarAuthorityInfluenceV1(
+        { ...records.reject, influenceSources: ["REASONING_HISTORY"] },
+        { expectedRecordDigest: committed },
+      ),
+      "FMP_AUTHORITY_INFLUENCE_DIGEST_MISMATCH",
+    );
+  });
+
+  it("refuses a malformed expectedRecordDigest", () => {
+    expectFamiliarError(
+      () => assertFamiliarAuthorityInfluenceV1(records.reject, { expectedRecordDigest: "sha256:short" as never }),
+      "FMP_INVALID_AUTHORITY_INFLUENCE",
+      "expectedRecordDigest must be",
+    );
   });
 
   it("rejects a tampered recordDigest", () => {

@@ -34,6 +34,11 @@ export default defineConfig({
       // agent scope. New tests for src/* modules go here; a follow-up
       // issue tracks the migration of the existing ones.
       "tests/shared/**/*.test.ts",
+      // Familiar Memory Plane contracts keep some colocated tests next to
+      // the module (e.g. src/familiar/context-boundary.test.ts). Without this
+      // glob `npm test` / CI silently skipped them. New Familiar tests should
+      // still go to tests/shared/familiar-*.test.ts.
+      "src/familiar/**/*.test.ts",
     ],
     setupFiles: ["./tests/test-setup.ts"],
     environment: "node",

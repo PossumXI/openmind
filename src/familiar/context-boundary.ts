@@ -111,6 +111,58 @@ export function contextUseReceiptV11Digest(receipt: ContextUseReceiptV11): Diges
   return sha256DigestCanonical(receipt);
 }
 
+/** The facts a CONTEXT-INJECTION decision is derived from. */
+export interface ContextBoundaryDecisionFacts {
+  createdAtMs: number;
+  freshUntilMs: number;
+  highRiskPath: boolean;
+  rawContentCrossed: boolean;
+  sanitizerStatus: ContextProcessorStatus;
+  validatorStatus: ContextProcessorStatus;
+  destinationCompartment: ContextCompartment;
+  taintClass: ContextTaintClass;
+}
+
+/**
+ * The only CONTEXT-INJECTION decision table. buildContextUseReceiptV11 uses it
+ * to decide a crossing; the Memory Plane adapter uses it to re-derive the
+ * decision of a receipt it did not build. `highRiskPath` is an input here but is
+ * not persisted in ContextUseReceiptV11.
+ */
+export function deriveContextBoundaryDecision(
+  facts: ContextBoundaryDecisionFacts,
+): Pick<ContextUseReceiptV11, "decision" | "decisionReason"> {
+  if (facts.freshUntilMs < facts.createdAtMs) {
+    return { decision: "HOLD", decisionReason: "context boundary evidence is stale" };
+  }
+  if (facts.highRiskPath && facts.rawContentCrossed) {
+    return { decision: "REJECT", decisionReason: "raw content cannot cross a high-risk governed context boundary" };
+  }
+  if (facts.sanitizerStatus === "INVALID" || facts.validatorStatus === "INVALID") {
+    return { decision: "REJECT", decisionReason: "sanitization or schema validation failed" };
+  }
+  if (facts.sanitizerStatus !== "VALID" || facts.validatorStatus !== "VALID") {
+    return {
+      decision: "HOLD",
+      decisionReason: "sanitization and schema validation must both be verified before context use",
+    };
+  }
+  if (
+    facts.highRiskPath &&
+    facts.destinationCompartment === "PARENT_AGENT" &&
+    (facts.taintClass === "EXTERNAL_UNTRUSTED" || facts.taintClass === "ACTIVE_CONTENT")
+  ) {
+    return {
+      decision: "HOLD",
+      decisionReason: "untrusted or active content requires a derived trust classification before parent-agent context use",
+    };
+  }
+  return {
+    decision: "ALLOW_SCHEMA_VALIDATED",
+    decisionReason: "sanitized, schema-validated derived value may cross the governed compartment boundary",
+  };
+}
+
 /**
  * CONTEXT-INJECTION invariant:
  * - high-risk paths never permit raw external/tool/memory content to cross into
@@ -147,29 +199,16 @@ export function buildContextUseReceiptV11(input: ContextBoundaryInput): ContextU
     schemaDigest: input.validator.schemaDigest,
   };
 
-  let decision: ContextBoundaryDecision = "ALLOW_SCHEMA_VALIDATED";
-  let decisionReason = "sanitized, schema-validated derived value may cross the governed compartment boundary";
-
-  if (freshUntil < now) {
-    decision = "HOLD";
-    decisionReason = "context boundary evidence is stale";
-  } else if (input.highRiskPath && input.rawContentCrossed) {
-    decision = "REJECT";
-    decisionReason = "raw content cannot cross a high-risk governed context boundary";
-  } else if (sanitizer.status === "INVALID" || validator.status === "INVALID") {
-    decision = "REJECT";
-    decisionReason = "sanitization or schema validation failed";
-  } else if (sanitizer.status !== "VALID" || validator.status !== "VALID") {
-    decision = "HOLD";
-    decisionReason = "sanitization and schema validation must both be verified before context use";
-  } else if (
-    input.highRiskPath &&
-    destinationCompartment === "PARENT_AGENT" &&
-    (input.taintClass === "EXTERNAL_UNTRUSTED" || input.taintClass === "ACTIVE_CONTENT")
-  ) {
-    decision = "HOLD";
-    decisionReason = "untrusted or active content requires a derived trust classification before parent-agent context use";
-  }
+  const { decision, decisionReason } = deriveContextBoundaryDecision({
+    createdAtMs: now,
+    freshUntilMs: freshUntil,
+    highRiskPath: input.highRiskPath,
+    rawContentCrossed: input.rawContentCrossed,
+    sanitizerStatus: sanitizer.status,
+    validatorStatus: validator.status,
+    destinationCompartment,
+    taintClass: input.taintClass,
+  });
 
   return {
     kind: "arobi.familiar-context-use.v1.1",

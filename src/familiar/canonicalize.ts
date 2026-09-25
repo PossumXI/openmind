@@ -67,3 +67,20 @@ export function sha256DigestCanonical(value: unknown): Digest {
   const hex = createHash("sha256").update(canonical, "utf8").digest("hex");
   return `sha256:${hex}`;
 }
+
+/**
+ * Domain-separated digest: sha256 over `${domain}\n${canonical JSON}` of the
+ * JSON round-tripped value. For JSON-safe values this is byte-identical to
+ * Immaculate evidence-lineage `canonicalEffectDigest(domain, value)`, so
+ * Immaculate can recompute a Familiar digest with its own code. The domain
+ * keeps a digest of one record type from being accepted as another's.
+ */
+export function sha256DomainDigestCanonical(domain: string, value: unknown): Digest {
+  if (typeof domain !== "string" || domain === "" || domain.includes("\n")) {
+    throw new FamiliarCanonicalizationError("digest domain must be a non-empty single-line string");
+  }
+  const normalized: unknown = JSON.parse(JSON.stringify(value));
+  const canonical = canonicalizeFamiliarValue(normalized);
+  const hex = createHash("sha256").update(`${domain}\n${canonical}`, "utf8").digest("hex");
+  return `sha256:${hex}`;
+}

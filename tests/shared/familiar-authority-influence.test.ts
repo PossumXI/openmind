@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { sha256DigestCanonical } from "./canonicalize.js";
-import { evaluateFamiliarAuthorityInfluence } from "./authority-influence.js";
+import { sha256DigestCanonical } from "../../src/familiar/canonicalize.js";
+import { evaluateFamiliarAuthorityInfluence } from "../../src/familiar/authority-influence.js";
 
 const base = {
   tenantId: "tenant-a",

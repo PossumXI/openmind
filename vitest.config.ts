@@ -80,6 +80,14 @@ export default defineConfig({
       // on the new code without having to first bring the whole
       // (~500-file) codebase up to 80%.
       thresholds: {
+        // Familiar adapters (FMP v1.2): registry validation, computed assignment, the settle and routing are pure
+        // and unit-tested in tests/shared/familiar-adapters.test.ts.
+        "src/familiar/adapters.ts": {
+          statements: 85,
+          branches: 85,
+          functions: 85,
+          lines: 85,
+        },
         // PR #302 — feat: per-directory .hivemind config. The resolver is
         // fully unit-tested; the hook gate is exercised via the capture/
         // session-start wiring tests. Lock both at 90.

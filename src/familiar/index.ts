@@ -12,6 +12,7 @@ export * from "./memory-plane-adapter.js";
 export * from "./authority-influence.js";
 export * from "./denied-intent.js";
 export * from "./retrieval.js";
+export * from "./adapters.js";
 export * from "./retrieval-context.js";
 export * from "./committed-retrieval.js";
 export * from "./read-only-store.js";

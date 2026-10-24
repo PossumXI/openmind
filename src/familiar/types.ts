@@ -46,6 +46,45 @@ export const MEMORY_MUTATION_OPERATIONS = [
 ] as const;
 export type MemoryMutationOperation = (typeof MEMORY_MUTATION_OPERATIONS)[number];
 
+/**
+ * FMP v1.2 (additive): the kinds of environment a memory can be bound to. A memory bound to a repository applies in
+ * that repository; one bound to a task belongs to that task's working set. Tenant and familiar isolation are not a
+ * scope: they stay the canonical, load-bearing filter (INV-FMP-004).
+ */
+export const FAMILIAR_SCOPE_BINDING_KINDS = [
+  "PROJECT",
+  "REPOSITORY",
+  "APPLICATION",
+  "RUNTIME",
+  "BRAND",
+  "TASK",
+] as const;
+export type FamiliarScopeBindingKind = (typeof FAMILIAR_SCOPE_BINDING_KINDS)[number];
+
+export interface FamiliarScopeBindingV1 {
+  kind: FamiliarScopeBindingKind;
+  /** Opaque, stable identity of that environment (a repository id, an application id, a task id). */
+  id: string;
+}
+
+/** A condition the memory depended on when it was observed: a named fact and the digest of its value then. */
+export interface FamiliarScopeDependencyV1 {
+  /** e.g. "runtime:node", "dependency:vite", "permission:repository-write". */
+  name: string;
+  digest: Digest;
+}
+
+/**
+ * FMP v1.2 (additive): where a memory applies and what it depended on. Absent on unscoped memory, which applies
+ * wherever its tenant and familiar do. Captured with the memory and never inferred later.
+ */
+export interface FamiliarMemoryScopeV1 {
+  /** At most one binding per kind. */
+  bindings: FamiliarScopeBindingV1[];
+  dependencies: FamiliarScopeDependencyV1[];
+  observedAt: string;
+}
+
 export type ControlledErasureState =
   | "VERIFIED"
   | "FAILED"
@@ -96,6 +135,8 @@ export interface FamiliarMemoryArtifactV1 {
   supersededBy?: Digest;
   createdAt: string;
   expiresAt?: string;
+  /** FMP v1.2 (additive): where this memory applies and what it depended on when observed. */
+  scope?: FamiliarMemoryScopeV1;
 }
 
 export interface MemoryMutationReceiptV1 {

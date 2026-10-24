@@ -1,5 +1,6 @@
 import {
   FAMILIAR_MEMORY_CLASSES,
+  FAMILIAR_SCOPE_BINDING_KINDS,
   MEMORY_MUTATION_OPERATIONS,
   MEMORY_SUPPORT_STATES,
   MEMORY_TRUST_CLASSES,
@@ -135,6 +136,49 @@ function validateScope(record: RecordValue): void {
   nonNegativeInteger(record, "identityEpoch");
 }
 
+const MAX_SCOPE_BINDINGS = FAMILIAR_SCOPE_BINDING_KINDS.length;
+const MAX_SCOPE_DEPENDENCIES = 64;
+const MAX_SCOPE_TEXT = 256;
+
+function boundedText(record: RecordValue, key: string, label: string): string {
+  const value = nonEmptyString(record, key);
+  if (value.length > MAX_SCOPE_TEXT) fail("FMP_INVALID_SCOPE", `${label} must be at most ${MAX_SCOPE_TEXT} characters`);
+  return value;
+}
+
+/** FMP v1.2: a memory's environmental scope, when it has one. One binding per kind; dependency names unique. */
+export function assertFamiliarMemoryScopeV1(value: unknown): void {
+  const scope = asRecord(value, "scope");
+  const bindings = scope.bindings;
+  if (!Array.isArray(bindings) || bindings.length > MAX_SCOPE_BINDINGS) {
+    fail("FMP_INVALID_SCOPE", `scope.bindings must be an array of at most ${MAX_SCOPE_BINDINGS}`);
+  }
+  const kinds = new Set<string>();
+  bindings.forEach((entry, index) => {
+    const binding = asRecord(entry, `scope.bindings[${index}]`);
+    const kind = enumValue(binding, "kind", FAMILIAR_SCOPE_BINDING_KINDS);
+    if (kinds.has(kind)) fail("FMP_INVALID_SCOPE", `scope.bindings has more than one ${kind} binding`);
+    kinds.add(kind);
+    boundedText(binding, "id", `scope.bindings[${index}].id`);
+  });
+  const dependencies = scope.dependencies;
+  if (!Array.isArray(dependencies) || dependencies.length > MAX_SCOPE_DEPENDENCIES) {
+    fail("FMP_INVALID_SCOPE", `scope.dependencies must be an array of at most ${MAX_SCOPE_DEPENDENCIES}`);
+  }
+  const names = new Set<string>();
+  dependencies.forEach((entry, index) => {
+    const dependency = asRecord(entry, `scope.dependencies[${index}]`);
+    const name = boundedText(dependency, "name", `scope.dependencies[${index}].name`);
+    if (names.has(name)) fail("FMP_INVALID_SCOPE", `scope.dependencies names ${name} more than once`);
+    names.add(name);
+    digest(dependency, "digest");
+  });
+  if (bindings.length === 0 && dependencies.length === 0) {
+    fail("FMP_INVALID_SCOPE", "a scope must bind an environment or name a dependency; omit it for unscoped memory");
+  }
+  isoUtc(scope, "observedAt");
+}
+
 function validateReceiptSubset(receipt: ContextUseReceiptV1): void {
   const retrieved = new Set(receipt.retrieved);
   const opened = new Set(receipt.opened);
@@ -200,6 +244,7 @@ export function assertFamiliarMemoryArtifactV1(value: unknown): asserts value is
   optionalDigest(record, "supersededBy");
   isoUtc(record, "createdAt");
   optionalIsoUtc(record, "expiresAt");
+  if (record.scope !== undefined) assertFamiliarMemoryScopeV1(record.scope);
 }
 
 function validateMutationShape(receipt: MemoryMutationReceiptV1): void {

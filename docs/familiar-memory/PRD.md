@@ -111,6 +111,14 @@ A Familiar Capsule may port identity lineage, selected memories, skills, and pri
 
 The system must not cite or claim reliance on a memory that was not available through the recorded retrieval/context path.
 
+### INV-FMP-011 — Routing is relevance, never admission
+
+Adapter routing ranks only candidates that already passed the canonical scope and policy filters, and returns candidates. Whether a candidate may enter a working context stays with the context boundary and Immaculate's memory-use policy. No score, activation or modulator adds trust or authority, or overrides those decisions.
+
+### INV-FMP-012 — Memory organization is computed, never stored as truth
+
+A memory's adapter assignments, lifecycle stage, applicability and validity are computed from canonical artifacts, lineage and receipts under a versioned, digest-pinned adapter registry. They are projections (INV-FMP-005): a registry revision recomputes them and can never leave a stale assignment behind, and no model decides where a memory belongs.
+
 ## 6. Memory model
 
 ### 6.1 Memory classes
@@ -153,6 +161,23 @@ Trust labels survive consolidation and appear in provenance.
 - `FORGOTTEN`
 
 Retrieval policy must filter or down-rank non-current states according to purpose; it may not silently promote them.
+
+### 6.4 Adapters (FMP v1.2, additive)
+
+Memory is organized into logical adapter families over the one canonical store: Active Thought, Episodic, Semantic, Procedural, Creative, Autobiographical, Project, Environmental and Reflective. An adapter is an entry in a versioned, digest-pinned registry (`FAMILIAR_ADAPTER_REGISTRY_V1`), not a database. Each memory has one primary adapter and any number of associations, each named by the registry rule that placed it (INV-FMP-012).
+
+Type and lifecycle are separate dimensions. The lifecycle (`CAPTURED`, `UNDER_EVALUATION`, `VALIDATED`, `APPLIED`, plus the support states that do not move forward) changes only with evidence and use, never with age, and nothing is pushed forward: a hypothesis can stay a hypothesis. As a memory's lineage grows, for example an interpretation grounded in outcome evidence and later corroborated, the same rules route it through the next adapter while it keeps associations to the ones it came from.
+
+Four properties stay apart:
+
+| Property | Source |
+| --- | --- |
+| Historical truth | the canonical artifact: support state, trust class, sources |
+| Current validity | computed: superseded, contested, expired, or needing revalidation after a dependency changed |
+| Contextual applicability | computed from the optional `scope` (environment bindings and digest-pinned dependencies) against the turn's environment |
+| Permitted use | the context boundary and Immaculate (INV-FMP-011) |
+
+The only new stored field is the optional `scope`, captured with the memory. See [ADAPTERS.md](ADAPTERS.md) for routing, the settle and the registry rules.
 
 ## 7. Canonical contracts
 

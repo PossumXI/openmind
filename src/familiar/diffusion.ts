@@ -1,4 +1,11 @@
 import { sha256DomainDigestCanonical } from "./canonicalize.js";
+import {
+  familiarMemoryApplicability,
+  familiarMemoryValidity,
+  type FamiliarRouteSignalsV1,
+  type FamiliarTurnV1,
+} from "./adapters.js";
+import type { FamiliarRetrievalCandidate } from "./retrieval.js";
 import type { Digest } from "./types.js";
 import { FamiliarValidationError, isDigest } from "./validate.js";
 
@@ -251,4 +258,83 @@ export function diffuseFamiliarActivation(input: {
     tracts: tracts.map((tract) => [tract.seed, tract.path, tract.directions, tract.crossing]),
   });
   return { schema: FAMILIAR_DIFFUSION_SCHEMA, bValue, activation: normalized, tensors, tracts, digest };
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The bridge to routing: the graph from what memories already record, and the signals routing takes.
+
+/**
+ * The diffusion graph over the candidates routing will weigh, built only from what each memory records: a LINEAGE
+ * link to each of its sources that is also a candidate, and a SCOPE link between memories bound to the same
+ * environment (a shared binding kind and id). Nothing is inferred from content. Each memory's SCOPE links share one
+ * unit of weight across its scope group, so a large project does not drown a lineage. A candidate that is not
+ * CURRENT, or is out of scope or in conflict for this turn, is a barrier.
+ */
+export function familiarDiffusionGraph(
+  candidates: readonly FamiliarRetrievalCandidate[],
+  turn: Pick<FamiliarTurnV1, "now" | "environment">,
+): { nodes: FamiliarDiffusionNodeV1[]; edges: FamiliarDiffusionEdgeV1[] } {
+  const nowMillis = Date.parse(turn.now);
+  if (!Number.isFinite(nowMillis)) fail("FMP_DIFFUSION_INVALID", "turn.now must be a timestamp");
+  const known = new Set(candidates.map((candidate) => candidate.artifactDigest));
+  const nodes = candidates.map(({ artifactDigest, memory }) => {
+    const { applicability } = familiarMemoryApplicability(memory.scope, turn.environment);
+    const validity = familiarMemoryValidity(memory, applicability, nowMillis);
+    return { digest: artifactDigest, barrier: validity !== "CURRENT" || applicability === "OUT_OF_SCOPE" || applicability === "CONFLICT" };
+  });
+
+  const edges: FamiliarDiffusionEdgeV1[] = [];
+  const groups = new Map<string, Digest[]>();
+  for (const { artifactDigest, memory } of candidates) {
+    for (const source of new Set(memory.sourceArtifacts)) {
+      if (source !== artifactDigest && known.has(source)) edges.push({ from: artifactDigest, to: source, direction: "LINEAGE" });
+    }
+    for (const binding of memory.scope?.bindings ?? []) {
+      const key = `${binding.kind}\u0000${binding.id}`;
+      groups.set(key, [...(groups.get(key) ?? []), artifactDigest]);
+    }
+  }
+  const scope = new Map<string, number>();
+  for (const members of groups.values()) {
+    const sorted = [...new Set(members)].sort();
+    if (sorted.length < 2) continue;
+    const weight = 1 / (sorted.length - 1);
+    for (let i = 0; i < sorted.length; i += 1) {
+      for (let j = i + 1; j < sorted.length; j += 1) {
+        const key = `${sorted[i]}|${sorted[j]}`;
+        scope.set(key, Math.min(1, (scope.get(key) ?? 0) + weight));
+      }
+    }
+  }
+  for (const [key, weight] of [...scope.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    const [from, to] = key.split("|") as [Digest, Digest];
+    edges.push({ from, to, direction: "SCOPE", weight: round6(weight) });
+  }
+  return { nodes, edges };
+}
+
+/**
+ * Routing signals with the graph term filled in from diffusion: the seeds are the candidates the caller's own
+ * index matched (signals.semantic above zero), and each candidate's graph signal is its diffused activation. The
+ * other signals pass through unchanged. The diffusion result comes back too, for its digest, tensors and tracts.
+ */
+export function familiarDiffusionSignals(input: {
+  candidates: readonly FamiliarRetrievalCandidate[];
+  turn: Pick<FamiliarTurnV1, "now" | "environment">;
+  signals?: ReadonlyMap<Digest, FamiliarRouteSignalsV1>;
+  bValue?: number;
+  profile?: FamiliarDiffusionProfileV1;
+}): { signals: Map<Digest, FamiliarRouteSignalsV1>; diffusion: FamiliarDiffusionResultV1 } {
+  const { nodes, edges } = familiarDiffusionGraph(input.candidates, input.turn);
+  const seeds = new Map<Digest, number>();
+  for (const { artifactDigest } of input.candidates) {
+    const semantic = input.signals?.get(artifactDigest)?.semantic;
+    if (typeof semantic === "number" && Number.isFinite(semantic) && semantic > 0) seeds.set(artifactDigest, Math.min(1, semantic));
+  }
+  const diffusion = diffuseFamiliarActivation({ nodes, edges, seeds, bValue: input.bValue, profile: input.profile });
+  const signals = new Map<Digest, FamiliarRouteSignalsV1>();
+  for (const { artifactDigest } of input.candidates) {
+    signals.set(artifactDigest, { ...input.signals?.get(artifactDigest), graph: diffusion.activation.get(artifactDigest) ?? 0 });
+  }
+  return { signals, diffusion };
 }

@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
   diffuseFamiliarActivation,
+  familiarDiffusionGraph,
+  familiarDiffusionSignals,
   fractionalAnisotropy,
   type FamiliarDiffusionEdgeV1,
   type FamiliarDiffusionNodeV1,
 } from "../../src/familiar/diffusion.js";
-import type { Digest } from "../../src/familiar/types.js";
+import type { Digest, FamiliarMemoryArtifactV1 } from "../../src/familiar/types.js";
+import { routeFamiliarMemories } from "../../src/familiar/adapters.js";
+import { sha256DigestCanonical } from "../../src/familiar/canonicalize.js";
 
 const d = (n: number) => `sha256:${n.toString(16).padStart(64, "0")}` as Digest;
 const nodes = (count: number, barriers: number[] = []): FamiliarDiffusionNodeV1[] =>
@@ -92,5 +96,64 @@ describe("familiar memory diffusion (FMP v1.3)", () => {
     expect(() => diffuseFamiliarActivation({ nodes: nodes(2), edges: [{ from: d(1), to: d(9), direction: "SCOPE" }], seeds: new Map() })).toThrow(/FMP_DIFFUSION_INVALID/);
     expect(() => diffuseFamiliarActivation({ nodes: nodes(2), edges: [], seeds: new Map([[d(1), 2]]) })).toThrow(/FMP_DIFFUSION_INVALID/);
     expect(() => diffuseFamiliarActivation({ nodes: nodes(2), edges: [], seeds: new Map(), bValue: 5 })).toThrow(/FMP_DIFFUSION_INVALID/);
+  });
+});
+
+const NOW = "2026-10-24T12:00:00.000Z";
+function memory(id: string, overrides: Partial<FamiliarMemoryArtifactV1> = {}): FamiliarMemoryArtifactV1 {
+  return {
+    kind: "arobi.familiar-memory", version: 1, memoryId: id, familiarId: "familiar-1", tenantId: "tenant-1", identityEpoch: 1,
+    memoryClass: "EPISODIC", contentDigest: d(100 + id.length), originLabelDigest: d(2), sourceArtifacts: [], transformationChain: [],
+    trustClass: "OBSERVED", supportState: "OBSERVED", mayInform: true, mayAuthorize: false, revision: 1,
+    createdAt: "2026-10-20T12:00:00.000Z", ...overrides,
+  };
+}
+const candidate = (value: FamiliarMemoryArtifactV1) => ({ artifactDigest: sha256DigestCanonical(value), memory: value });
+const repo = (id: string) => ({ bindings: [{ kind: "REPOSITORY" as const, id }], dependencies: [], observedAt: NOW });
+
+describe("familiar memory diffusion: the bridge to routing", () => {
+  const source = candidate(memory("source"));
+  const derived = candidate(memory("derived", { sourceArtifacts: [source.artifactDigest, d(77)] }));
+  const sibling = candidate(memory("sibling", { scope: repo("asgard") }));
+  const peer = candidate(memory("peer", { scope: repo("asgard") }));
+  const elsewhere = candidate(memory("elsewhere", { scope: repo("other") }));
+  const withdrawn = candidate(memory("withdrawn", { supportState: "QUARANTINED", sourceArtifacts: [source.artifactDigest] }));
+  const all = [source, derived, sibling, peer, elsewhere, withdrawn];
+  const environment = { bindings: [{ kind: "REPOSITORY" as const, id: "asgard" }], facts: [] };
+
+  it("links only what memories record: sources in the set and shared bindings, with barriers for this turn", () => {
+    const graph = familiarDiffusionGraph(all, { now: NOW, environment });
+    expect(graph.edges).toContainEqual({ from: derived.artifactDigest, to: source.artifactDigest, direction: "LINEAGE" });
+    expect(graph.edges.some((edge) => edge.to === d(77))).toBe(false);
+    const [a, b] = [sibling.artifactDigest, peer.artifactDigest].sort();
+    expect(graph.edges).toContainEqual({ from: a, to: b, direction: "SCOPE", weight: 1 });
+    expect(graph.edges.some((edge) => edge.direction === "SCOPE" && [edge.from, edge.to].includes(elsewhere.artifactDigest))).toBe(false);
+    const barrier = new Map(graph.nodes.map((node) => [node.digest, node.barrier]));
+    expect(barrier.get(withdrawn.artifactDigest)).toBe(true);
+    expect(barrier.get(elsewhere.artifactDigest)).toBe(true);
+    expect(barrier.get(source.artifactDigest)).toBe(false);
+  });
+
+  it("fills signals.graph from the semantic seeds, keeps the other signals, and lifts a linked memory in the route", () => {
+    const signals = new Map([[derived.artifactDigest, { semantic: 0.9, reliedUpon: 2 }]]);
+    const turn = { now: NOW, intents: ["BUILD" as const], tools: [], environment };
+    const result = familiarDiffusionSignals({ candidates: all, turn, signals, bValue: 2 });
+    expect(result.signals.get(derived.artifactDigest)).toMatchObject({ semantic: 0.9, reliedUpon: 2, graph: 1 });
+    expect(result.signals.get(source.artifactDigest)!.graph).toBeGreaterThan(0);
+    expect(result.signals.get(withdrawn.artifactDigest)!.graph).toBe(0);
+    expect(result.signals.get(sibling.artifactDigest)!.graph).toBe(0);
+    expect(result.diffusion.tracts[0]).toMatchObject({ seed: derived.artifactDigest, path: [derived.artifactDigest, source.artifactDigest] });
+
+    const pair = [derived, source];
+    const plain = routeFamiliarMemories({ turn, candidates: pair, signals });
+    const diffused = routeFamiliarMemories({ turn, candidates: pair, signals: result.signals });
+    const scoreOf = (route: typeof plain, digest: Digest) => route.selected.find((entry) => entry.artifactDigest === digest)?.score ?? 0;
+    expect(scoreOf(diffused, source.artifactDigest)).toBeGreaterThan(scoreOf(plain, source.artifactDigest));
+    expect(diffused.selected.find((entry) => entry.artifactDigest === source.artifactDigest)!.terms.graph).toBeGreaterThan(0);
+  });
+
+  it("is a no-op without seeds: every graph signal is 0", () => {
+    const result = familiarDiffusionSignals({ candidates: all, turn: { now: NOW, environment } });
+    for (const value of result.signals.values()) expect(value.graph).toBe(0);
   });
 });

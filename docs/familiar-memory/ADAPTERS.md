@@ -72,7 +72,7 @@ The order adapters are listed in never changes the result.
     S(m|q) = w_s*semantic + w_g*graph + w_t*temporal + w_e*environment + w_p*provenance + w_u*utility
     score  = S(m|q) * (best pathway's activation) * (historicalFactor, for history on a forward-looking turn)
 
-- `semantic` and `graph` come from the caller's own indexes, lexical or vector.
+- `semantic` comes from the caller's own index, lexical or vector. `graph` comes from the caller too, or from diffusion (below).
 - `temporal` is the primary adapter's half-life decay. A family without one never decays, so age changes rank, never truth.
 - `environment` comes from applicability.
 - `provenance` is trust times support.
@@ -85,6 +85,18 @@ A memory that is not current or does not apply here is a historical reference. O
 Each adapter contributes at most its budget, and the working set holds at most `maxNotes`.
 
 The route is candidates. It has `admission: "NOT_EVALUATED"` and `mayAuthorize: false`, plus a digest (`familiarRouteDigest`) to record beside the context-use receipt of what it led to. `familiarAdapterRanker` plugs the route into `retrieveFamiliarMemories`, which runs every tenant, familiar, identity-epoch, support, trust and expiry filter first and refuses any result from outside that set. Admission stays with the context boundary and Immaculate (INV-FMP-011).
+
+## Diffusion: the graph signal (FMP v1.3)
+
+`familiarDiffusionSignals` fills `signals.graph` by spreading the turn's semantic matches through the memory graph. The model is diffusion MRI:
+
+- **The graph.** `familiarDiffusionGraph` builds it only from what memories record. There is a `LINEAGE` link to each source that is also a candidate; read downward, the same link is `DERIVATION`. There is a `SCOPE` link between memories bound to the same environment (same binding kind and id); each memory's scope links share one unit of weight. Nothing is inferred from content. `RELATION` and `EPISODE` links are for callers that record them.
+- **Anisotropy (DTI).** Each direction has its own diffusivity: lineage 1, derivation 0.8, relation 0.7, scope 0.5, episode 0.3. Activation travels further along strong directions than across them.
+- **Restriction.** A candidate that is not `CURRENT`, or is out of scope or in conflict for the turn, is a barrier. It receives nothing and passes nothing.
+- **Depth (b-value).** 1 to 4 diffusion steps (default 2) set how far a turn reaches.
+- **Measures and tracts.** Each memory gets a tensor: eigenvalues, mean diffusivity and fractional anisotropy. From each seed, a tract follows the principal direction and branches where a second direction to a different memory is nearly as strong (a crossing). A tract records why a memory surfaced.
+
+Diffusion only changes the `graph` term. It never admits, filters, promotes or changes trust, and a memory routing refuses stays refused. The result is deterministic and order independent, and carries a digest to record beside the route's.
 
 ## Applicability and validity
 

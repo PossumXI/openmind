@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  FAMILIAR_DIFFUSION_PROFILE_V1,
   diffuseFamiliarActivation,
   familiarDiffusionGraph,
   familiarDiffusionSignals,
@@ -12,6 +13,7 @@ import { routeFamiliarMemories } from "../../src/familiar/adapters.js";
 import { sha256DigestCanonical } from "../../src/familiar/canonicalize.js";
 
 const d = (n: number) => `sha256:${n.toString(16).padStart(64, "0")}` as Digest;
+const round = (value: number) => Math.round(value * 1e6) / 1e6;
 const nodes = (count: number, barriers: number[] = []): FamiliarDiffusionNodeV1[] =>
   Array.from({ length: count }, (_, i) => ({ digest: d(i + 1), barrier: barriers.includes(i + 1) }));
 
@@ -96,6 +98,66 @@ describe("familiar memory diffusion (FMP v1.3)", () => {
     expect(() => diffuseFamiliarActivation({ nodes: nodes(2), edges: [{ from: d(1), to: d(9), direction: "SCOPE" }], seeds: new Map() })).toThrow(/FMP_DIFFUSION_INVALID/);
     expect(() => diffuseFamiliarActivation({ nodes: nodes(2), edges: [], seeds: new Map([[d(1), 2]]) })).toThrow(/FMP_DIFFUSION_INVALID/);
     expect(() => diffuseFamiliarActivation({ nodes: nodes(2), edges: [], seeds: new Map(), bValue: 5 })).toThrow(/FMP_DIFFUSION_INVALID/);
+    expect(() => diffuseFamiliarActivation({ nodes: [...nodes(2), { digest: d(1) }], edges: [], seeds: new Map() })).toThrow(/duplicate node/);
+    expect(() => diffuseFamiliarActivation({ nodes: nodes(2), seeds: new Map(),
+      edges: [{ from: d(1), to: d(2), direction: "SCOPE" }, { from: d(1), to: d(2), direction: "SCOPE" }] })).toThrow(/duplicate edge/);
+    expect(() => diffuseFamiliarActivation({ nodes: nodes(2), edges: [{ from: d(1), to: d(1), direction: "SCOPE" }], seeds: new Map() })).toThrow(/two distinct/);
+  });
+
+  it("refuses a malformed profile instead of computing with it", () => {
+    const base = FAMILIAR_DIFFUSION_PROFILE_V1;
+    const broken = [
+      { ...base, diffusivity: { ...base.diffusivity, SCOPE: Number.NaN } },
+      { ...base, diffusivity: { LINEAGE: 1 } as typeof base.diffusivity },
+      { ...base, maxStep: 0 },
+      { ...base, maxStep: 2 },
+      { ...base, crossingRatio: 0 },
+      { ...base, tractThreshold: -1 },
+      { ...base, maxTractLength: 1 },
+      { ...base, maxSeeds: 0 },
+      { ...base, bValue: 9 },
+    ];
+    for (const profile of broken) {
+      expect(() => diffuseFamiliarActivation({ nodes: nodes(2), edges: [], seeds: new Map([[d(1), 1]]), profile })).toThrow(/FMP_DIFFUSION_PROFILE_INVALID/);
+    }
+  });
+
+  it("drops a seed that is a barrier, and still spreads from the others", () => {
+    const result = diffuseFamiliarActivation({
+      nodes: nodes(3, [2]),
+      edges: [{ from: d(1), to: d(3), direction: "RELATION" }, { from: d(2), to: d(3), direction: "RELATION" }],
+      seeds: new Map([[d(1), 1], [d(2), 1]]),
+    });
+    expect(result.activation.get(d(2))).toBe(0);
+    expect(result.activation.get(d(3))!).toBeGreaterThan(0);
+    expect(result.tracts.every((tract) => tract.seed === d(1))).toBe(true);
+  });
+
+  it("stays within [0, 1] on a dense graph at the stability bound", () => {
+    const hub = Array.from({ length: 12 }, (_, i) => i + 2);
+    const directions = ["LINEAGE", "DERIVATION", "RELATION", "SCOPE", "EPISODE"] as const;
+    const edges: FamiliarDiffusionEdgeV1[] = hub.flatMap((i) => [
+      { from: d(1), to: d(i), direction: directions[i % 5] },
+      { from: d(i), to: d(i === 13 ? 2 : i + 1), direction: "LINEAGE" },
+    ]);
+    const result = diffuseFamiliarActivation({ nodes: nodes(13), edges, seeds: new Map([[d(1), 1], [d(5), 0.6], [d(9), 0.9]]), bValue: 4,
+      profile: { ...FAMILIAR_DIFFUSION_PROFILE_V1, maxStep: 1 } });
+    for (const value of result.activation.values()) expect(value >= 0 && value <= 1).toBe(true);
+  });
+
+  it("keeps the strongest seeds up to maxSeeds", () => {
+    const count = FAMILIAR_DIFFUSION_PROFILE_V1.maxSeeds + 1;
+    const seeds = new Map(Array.from({ length: count }, (_, i) => [d(i + 1), round((i + 1) / count)] as [Digest, number]));
+    const result = diffuseFamiliarActivation({ nodes: nodes(count), edges: [], seeds });
+    expect(result.activation.get(d(1))).toBe(0);
+    for (let i = 2; i <= count; i += 1) expect(result.activation.get(d(i))!).toBeGreaterThan(0);
+  });
+
+  it("bounds a tract to maxTractLength memories, the seed included", () => {
+    const edges: FamiliarDiffusionEdgeV1[] = Array.from({ length: 9 }, (_, i) => ({ from: d(i + 2), to: d(i + 1), direction: "LINEAGE" as const }));
+    const result = diffuseFamiliarActivation({ nodes: nodes(10), edges, seeds: new Map([[d(1), 1]]) });
+    expect(result.tracts).toHaveLength(1);
+    expect(result.tracts[0].path).toHaveLength(FAMILIAR_DIFFUSION_PROFILE_V1.maxTractLength);
   });
 });
 

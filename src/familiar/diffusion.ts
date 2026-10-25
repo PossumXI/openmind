@@ -121,6 +121,33 @@ function round6(value: number): number {
 }
 
 const DIRECTION_SET = new Set<string>(FAMILIAR_DIFFUSION_DIRECTIONS);
+
+/** Code-unit order: the same on every host, unlike localeCompare, so the digest never depends on collation. */
+function byCodeUnit(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+const inRange = (value: unknown, min: number, max: number, minOpen = false): boolean =>
+  typeof value === "number" && Number.isFinite(value) && (minOpen ? value > min : value >= min) && value <= max;
+const integerIn = (value: unknown, min: number, max: number): boolean =>
+  Number.isSafeInteger(value) && (value as number) >= min && (value as number) <= max;
+
+/** A caller-supplied profile is checked field by field: a missing or non-finite value refuses, never poisons. */
+function checkedProfile(profile: FamiliarDiffusionProfileV1): FamiliarDiffusionProfileV1 {
+  const invalid = (field: string): never => fail("FMP_DIFFUSION_PROFILE_INVALID", `profile.${field} is out of range`);
+  if (!profile || profile.schema !== FAMILIAR_DIFFUSION_SCHEMA) fail("FMP_DIFFUSION_PROFILE_INVALID", "unknown diffusion profile");
+  if (!profile.diffusivity || typeof profile.diffusivity !== "object") invalid("diffusivity");
+  for (const direction of FAMILIAR_DIFFUSION_DIRECTIONS) {
+    if (!inRange(profile.diffusivity[direction], 0, 1)) invalid(`diffusivity.${direction}`);
+  }
+  if (!integerIn(profile.bValue, 1, 4)) invalid("bValue");
+  if (!inRange(profile.maxStep, 0, 1, true)) invalid("maxStep");
+  if (!inRange(profile.tractThreshold, 0, 1)) invalid("tractThreshold");
+  if (!inRange(profile.crossingRatio, 0, 1, true)) invalid("crossingRatio");
+  if (!integerIn(profile.maxTractLength, 2, 64)) invalid("maxTractLength");
+  if (!integerIn(profile.maxSeeds, 1, 256)) invalid("maxSeeds");
+  return profile;
+}
 const REVERSE: Record<FamiliarDiffusionDirection, FamiliarDiffusionDirection> = {
   LINEAGE: "DERIVATION", DERIVATION: "LINEAGE", SCOPE: "SCOPE", RELATION: "RELATION", EPISODE: "EPISODE",
 };
@@ -149,12 +176,11 @@ export function diffuseFamiliarActivation(input: {
   bValue?: number;
   profile?: FamiliarDiffusionProfileV1;
 }): FamiliarDiffusionResultV1 {
-  const profile = input.profile ?? FAMILIAR_DIFFUSION_PROFILE_V1;
-  if (profile.schema !== FAMILIAR_DIFFUSION_SCHEMA) fail("FMP_DIFFUSION_PROFILE_INVALID", "unknown diffusion profile");
+  const profile = checkedProfile(input.profile ?? FAMILIAR_DIFFUSION_PROFILE_V1);
   const bValue = input.bValue ?? profile.bValue;
   if (!Number.isSafeInteger(bValue) || bValue < 1 || bValue > 4) fail("FMP_DIFFUSION_INVALID", "bValue must be 1 to 4");
 
-  const nodes = [...input.nodes].sort((a, b) => (a.digest < b.digest ? -1 : a.digest > b.digest ? 1 : 0));
+  const nodes = [...input.nodes].sort((a, b) => byCodeUnit(a.digest, b.digest));
   const barrier = new Map<Digest, boolean>();
   for (const node of nodes) {
     if (!isDigest(node.digest)) fail("FMP_DIFFUSION_INVALID", "node digest is invalid");
@@ -165,7 +191,7 @@ export function diffuseFamiliarActivation(input: {
   // Undirected conductances; a link touching a barrier conducts nothing (restriction).
   const links = new Map<Digest, Link[]>(nodes.map((node) => [node.digest, []]));
   const edgeKeys = new Set<string>();
-  const edges = [...input.edges].sort((a, b) => `${a.from}|${a.to}|${a.direction}`.localeCompare(`${b.from}|${b.to}|${b.direction}`));
+  const edges = [...input.edges].sort((a, b) => byCodeUnit(`${a.from}|${a.to}|${a.direction}`, `${b.from}|${b.to}|${b.direction}`));
   for (const edge of edges) {
     if (!DIRECTION_SET.has(edge.direction)) fail("FMP_DIFFUSION_INVALID", "edge direction is unknown");
     if (!barrier.has(edge.from) || !barrier.has(edge.to) || edge.from === edge.to) fail("FMP_DIFFUSION_INVALID", "edge must join two distinct known nodes");
@@ -225,7 +251,8 @@ export function diffuseFamiliarActivation(input: {
     links.get(digest)!
       .filter((link) => link.direction === direction && link.conductance >= profile.tractThreshold && !visited.has(link.to) && !barrier.get(link.to))
       .sort((a, b) => b.conductance - a.conductance || (a.to < b.to ? -1 : 1))[0];
-  const follow = (seed: Digest, path: Digest[], directions: FamiliarDiffusionDirection[], crossing: boolean, depth: number) => {
+  // maxTractLength bounds the memories on a tract, the seed included.
+  const follow = (seed: Digest, path: Digest[], directions: FamiliarDiffusionDirection[], crossing: boolean) => {
     const here = path[path.length - 1];
     const tensor = tensors.get(here)!;
     const visited = new Set(path);
@@ -239,14 +266,14 @@ export function diffuseFamiliarActivation(input: {
     const other = open.slice(1).find((entry) => entry.link.to !== firstLink?.to);
     const branch = other && tensor.lambda[other.direction] >= profile.crossingRatio * tensor.lambda[open[0].direction]
       ? other.link : undefined;
-    if (!firstLink || path.length > profile.maxTractLength || depth > profile.maxTractLength) {
+    if (!firstLink || path.length >= profile.maxTractLength) {
       if (path.length > 1) tracts.push({ seed, path, directions, crossing });
       return;
     }
-    follow(seed, [...path, firstLink.to], [...directions, firstLink.direction], crossing || Boolean(branch), depth + 1);
-    if (branch && branch.to !== firstLink.to) follow(seed, [...path, branch.to], [...directions, branch.direction], true, depth + 1);
+    follow(seed, [...path, firstLink.to], [...directions, firstLink.direction], crossing || Boolean(branch));
+    if (branch && branch.to !== firstLink.to) follow(seed, [...path, branch.to], [...directions, branch.direction], true);
   };
-  for (const [seed] of seeds) follow(seed, [seed], [], false, 0);
+  for (const [seed] of seeds) follow(seed, [seed], [], false);
 
   const digest = sha256DomainDigestCanonical("arobi/familiar-diffusion/v1", {
     profile,
@@ -306,7 +333,7 @@ export function familiarDiffusionGraph(
       }
     }
   }
-  for (const [key, weight] of [...scope.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+  for (const [key, weight] of [...scope.entries()].sort(([a], [b]) => byCodeUnit(a, b))) {
     const [from, to] = key.split("|") as [Digest, Digest];
     edges.push({ from, to, direction: "SCOPE", weight: round6(weight) });
   }

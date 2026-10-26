@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   FAMILIAR_DIFFUSION_PROFILE_V1,
   diffuseFamiliarActivation,
+  familiarDiffusionEvidence,
   familiarDiffusionGraph,
   familiarDiffusionSignals,
   fractionalAnisotropy,
@@ -10,6 +11,7 @@ import {
 } from "../../src/familiar/diffusion.js";
 import type { Digest, FamiliarMemoryArtifactV1 } from "../../src/familiar/types.js";
 import { routeFamiliarMemories } from "../../src/familiar/adapters.js";
+import { assertFamiliarMemoryArtifactV1 } from "../../src/familiar/validate.js";
 import { sha256DigestCanonical } from "../../src/familiar/canonicalize.js";
 
 const d = (n: number) => `sha256:${n.toString(16).padStart(64, "0")}` as Digest;
@@ -217,5 +219,69 @@ describe("familiar memory diffusion: the bridge to routing", () => {
   it("is a no-op without seeds: every graph signal is 0", () => {
     const result = familiarDiffusionSignals({ candidates: all, turn: { now: NOW, environment } });
     for (const value of result.signals.values()) expect(value.graph).toBe(0);
+  });
+});
+
+describe("familiar memory diffusion: explicit links (RELATION, EPISODE) and evidence", () => {
+  const base = candidate(memory("base", { links: { episode: "chat-42" } }));
+  const sameEpisode = candidate(memory("same-episode", { links: { episode: "chat-42" } }));
+  const otherEpisode = candidate(memory("other-episode", { links: { episode: "chat-7" } }));
+  const related = candidate(memory("related"));
+  const relating = candidate(memory("relating", { links: { related: [related.artifactDigest, d(999)] } }));
+  const all = [base, sameEpisode, otherEpisode, related, relating];
+  const environment = { bindings: [], facts: [] };
+
+  it("links a recorded relation once, ignores a related memory that is not a candidate, and links an episode's memories", () => {
+    const graph = familiarDiffusionGraph(all, { now: NOW, environment });
+    const [from, to] = [relating.artifactDigest, related.artifactDigest].sort();
+    expect(graph.edges.filter((edge) => edge.direction === "RELATION")).toEqual([{ from, to, direction: "RELATION" }]);
+    expect(graph.edges.some((edge) => edge.to === d(999) || edge.from === d(999))).toBe(false);
+    const [a, b] = [base.artifactDigest, sameEpisode.artifactDigest].sort();
+    expect(graph.edges).toContainEqual({ from: a, to: b, direction: "EPISODE", weight: 1 });
+    expect(graph.edges.some((edge) => edge.direction === "EPISODE" && [edge.from, edge.to].includes(otherEpisode.artifactDigest))).toBe(false);
+  });
+
+  it("does not infer links from content: two memories with the same content but no recorded link are not linked", () => {
+    const twinA = candidate(memory("twin-a", { contentDigest: d(555) }));
+    const twinB = candidate(memory("twin-b", { contentDigest: d(555) }));
+    expect(familiarDiffusionGraph([twinA, twinB], { now: NOW, environment }).edges).toEqual([]);
+  });
+
+  it("spreads activation along a recorded relation and through an episode", () => {
+    const result = familiarDiffusionSignals({ candidates: all, turn: { now: NOW, environment }, signals: new Map([[relating.artifactDigest, { semantic: 1 }], [base.artifactDigest, { semantic: 1 }]]) });
+    expect(result.signals.get(related.artifactDigest)!.graph).toBeGreaterThan(0);
+    expect(result.signals.get(sameEpisode.artifactDigest)!.graph).toBeGreaterThan(0);
+    expect(result.signals.get(otherEpisode.artifactDigest)!.graph).toBe(0);
+  });
+
+  it("gives evidence that names the result and the profile, with no memory content and no authority", () => {
+    const signals = new Map([[relating.artifactDigest, { semantic: 1 }]]);
+    const one = familiarDiffusionSignals({ candidates: all, turn: { now: NOW, environment }, signals });
+    const evidence = familiarDiffusionEvidence(one.diffusion);
+    expect(evidence).toMatchObject({ schema: "arobi.familiar-diffusion-evidence.v1", diffusionDigest: one.diffusion.digest, seeds: 1, mayAuthorize: false });
+    expect(JSON.stringify(evidence)).not.toContain("chat-42");
+    const slower = { ...FAMILIAR_DIFFUSION_PROFILE_V1, diffusivity: { ...FAMILIAR_DIFFUSION_PROFILE_V1.diffusivity, RELATION: 0.4 } };
+    const two = familiarDiffusionSignals({ candidates: all, turn: { now: NOW, environment }, signals, profile: slower });
+    expect(familiarDiffusionEvidence(two.diffusion).profileDigest).not.toBe(evidence.profileDigest);
+    expect(two.diffusion.digest).not.toBe(one.diffusion.digest);
+  });
+});
+
+describe("FMP v1.3 links are validated with the memory", () => {
+  it("accepts recorded links and refuses anything else", () => {
+    expect(() => assertFamiliarMemoryArtifactV1(memory("linked", { links: { related: [d(5)], episode: "task:2026-10-26.bakery" } }))).not.toThrow();
+    for (const links of [
+      {},
+      { related: [] },
+      { related: ["not-a-digest"] },
+      { related: [d(5), d(5)] },
+      { related: Array.from({ length: 33 }, (_, i) => d(i + 1)) },
+      { episode: "" },
+      { episode: "has space" },
+      { episode: "x".repeat(129) },
+      { episode: "chat-1", note: "inferred from text" },
+    ]) {
+      expect(() => assertFamiliarMemoryArtifactV1(memory("linked", { links } as never)), JSON.stringify(links).slice(0, 60)).toThrow(/links/);
+    }
   });
 });

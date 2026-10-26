@@ -137,6 +137,19 @@ export interface FamiliarMemoryArtifactV1 {
   expiresAt?: string;
   /** FMP v1.2 (additive): where this memory applies and what it depended on when observed. */
   scope?: FamiliarMemoryScopeV1;
+  /** FMP v1.3 (additive): links the writer recorded when this memory was written. Never inferred from its content. */
+  links?: FamiliarMemoryLinksV1;
+}
+
+/**
+ * FMP v1.3: what a memory was explicitly linked to when it was written. Diffusion reads these as RELATION and
+ * EPISODE links; nothing here is guessed from text, and a link never carries authority.
+ */
+export interface FamiliarMemoryLinksV1 {
+  /** Memories a person or the writing surface explicitly related to this one, by artifact digest. */
+  related?: Digest[];
+  /** The episode this memory was written in: one conversation, task or session, by its id. */
+  episode?: string;
 }
 
 export interface MemoryMutationReceiptV1 {

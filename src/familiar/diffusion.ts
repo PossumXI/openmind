@@ -110,6 +110,10 @@ export interface FamiliarDiffusionResultV1 {
   tracts: FamiliarDiffusionTractV1[];
   /** Commits the inputs and the outputs, without memory content. */
   digest: Digest;
+  /** The diffusion settings alone, so evidence can say which profile shaped a ranking. */
+  profileDigest: Digest;
+  /** How many seeds diffused: the matched memories that were not barriers, at most profile.maxSeeds. */
+  seedCount: number;
 }
 
 function fail(code: string, message: string): never {
@@ -284,17 +288,21 @@ export function diffuseFamiliarActivation(input: {
     activation: [...normalized.entries()],
     tracts: tracts.map((tract) => [tract.seed, tract.path, tract.directions, tract.crossing]),
   });
-  return { schema: FAMILIAR_DIFFUSION_SCHEMA, bValue, activation: normalized, tensors, tracts, digest };
+  const profileDigest = sha256DomainDigestCanonical("arobi/familiar-diffusion-profile/v1", profile);
+  return { schema: FAMILIAR_DIFFUSION_SCHEMA, bValue, activation: normalized, tensors, tracts, digest, profileDigest, seedCount: seeds.length };
 }
 
 // ---------------------------------------------------------------------------------------------------------------
 // The bridge to routing: the graph from what memories already record, and the signals routing takes.
 
 /**
- * The diffusion graph over the candidates routing will weigh, built only from what each memory records: a LINEAGE
- * link to each of its sources that is also a candidate, and a SCOPE link between memories bound to the same
- * environment (a shared binding kind and id). Nothing is inferred from content. Each memory's SCOPE links share one
- * unit of weight across its scope group, so a large project does not drown a lineage. A candidate that is not
+ * The diffusion graph over the candidates routing will weigh, built only from what each memory records:
+ * - LINEAGE: a link to each of its sources that is also a candidate (read the other way, DERIVATION);
+ * - RELATION: a link to each candidate it was explicitly related to when written (links.related);
+ * - SCOPE: a link between memories bound to the same environment (a shared binding kind and id);
+ * - EPISODE: a link between memories written in the same episode (links.episode).
+ * Nothing is inferred from content. A memory's SCOPE links, and its EPISODE links, each share one unit of weight
+ * across their group, so a large project or a long conversation does not drown a lineage. A candidate that is not
  * CURRENT, or is out of scope or in conflict for this turn, is a barrier.
  */
 export function familiarDiffusionGraph(
@@ -312,6 +320,8 @@ export function familiarDiffusionGraph(
 
   const edges: FamiliarDiffusionEdgeV1[] = [];
   const groups = new Map<string, Digest[]>();
+  const episodes = new Map<string, Digest[]>();
+  const related = new Set<string>();
   for (const { artifactDigest, memory } of candidates) {
     for (const source of new Set(memory.sourceArtifacts)) {
       if (source !== artifactDigest && known.has(source)) edges.push({ from: artifactDigest, to: source, direction: "LINEAGE" });
@@ -320,8 +330,31 @@ export function familiarDiffusionGraph(
       const key = `${binding.kind}\u0000${binding.id}`;
       groups.set(key, [...(groups.get(key) ?? []), artifactDigest]);
     }
+    // A relation recorded on either memory links the pair once.
+    for (const other of new Set(memory.links?.related ?? [])) {
+      if (other !== artifactDigest && known.has(other)) related.add(byCodeUnit(artifactDigest, other) < 0 ? `${artifactDigest}|${other}` : `${other}|${artifactDigest}`);
+    }
+    if (memory.links?.episode) episodes.set(memory.links.episode, [...(episodes.get(memory.links.episode) ?? []), artifactDigest]);
   }
-  const scope = new Map<string, number>();
+  for (const key of [...related].sort(byCodeUnit)) {
+    const [from, to] = key.split("|") as [Digest, Digest];
+    edges.push({ from, to, direction: "RELATION" });
+  }
+  for (const [key, weight] of [...sharedWeights(episodes).entries()].sort(([a], [b]) => byCodeUnit(a, b))) {
+    const [from, to] = key.split("|") as [Digest, Digest];
+    edges.push({ from, to, direction: "EPISODE", weight: round6(weight) });
+  }
+  const scope = sharedWeights(groups);
+  for (const [key, weight] of [...scope.entries()].sort(([a], [b]) => byCodeUnit(a, b))) {
+    const [from, to] = key.split("|") as [Digest, Digest];
+    edges.push({ from, to, direction: "SCOPE", weight: round6(weight) });
+  }
+  return { nodes, edges };
+}
+
+/** Each member of a group shares one unit of weight across the rest of its group; a pair in two groups adds up, to 1. */
+function sharedWeights(groups: Map<string, Digest[]>): Map<string, number> {
+  const shared = new Map<string, number>();
   for (const members of groups.values()) {
     const sorted = [...new Set(members)].sort();
     if (sorted.length < 2) continue;
@@ -329,15 +362,11 @@ export function familiarDiffusionGraph(
     for (let i = 0; i < sorted.length; i += 1) {
       for (let j = i + 1; j < sorted.length; j += 1) {
         const key = `${sorted[i]}|${sorted[j]}`;
-        scope.set(key, Math.min(1, (scope.get(key) ?? 0) + weight));
+        shared.set(key, Math.min(1, (shared.get(key) ?? 0) + weight));
       }
     }
   }
-  for (const [key, weight] of [...scope.entries()].sort(([a], [b]) => byCodeUnit(a, b))) {
-    const [from, to] = key.split("|") as [Digest, Digest];
-    edges.push({ from, to, direction: "SCOPE", weight: round6(weight) });
-  }
-  return { nodes, edges };
+  return shared;
 }
 
 /**
@@ -364,4 +393,29 @@ export function familiarDiffusionSignals(input: {
     signals.set(artifactDigest, { ...input.signals?.get(artifactDigest), graph: diffusion.activation.get(artifactDigest) ?? 0 });
   }
   return { signals, diffusion };
+}
+
+/** What a context-use receipt binds about a ranking diffusion shaped: digests and counts, never memory content. */
+export interface FamiliarDiffusionEvidenceV1 {
+  schema: "arobi.familiar-diffusion-evidence.v1";
+  /** The diffusion result: its graph, seeds, profile, activation and tracts. */
+  diffusionDigest: Digest;
+  profileDigest: Digest;
+  bValue: number;
+  seeds: number;
+  tracts: number;
+  /** Diffusion only ranks memories routing already admitted; it never grants anything. */
+  mayAuthorize: false;
+}
+
+export function familiarDiffusionEvidence(result: FamiliarDiffusionResultV1): FamiliarDiffusionEvidenceV1 {
+  return {
+    schema: "arobi.familiar-diffusion-evidence.v1",
+    diffusionDigest: result.digest,
+    profileDigest: result.profileDigest,
+    bValue: result.bValue,
+    seeds: result.seedCount,
+    tracts: result.tracts.length,
+    mayAuthorize: false,
+  };
 }

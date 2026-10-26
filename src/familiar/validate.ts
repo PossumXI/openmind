@@ -146,6 +146,30 @@ function boundedText(record: RecordValue, key: string, label: string): string {
   return value;
 }
 
+const MAX_LINKED_MEMORIES = 32;
+const EPISODE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+
+/** FMP v1.3: the links a memory recorded. Related digests are unique and bounded; an episode is an id, not text. */
+export function assertFamiliarMemoryLinksV1(value: unknown): void {
+  const links = asRecord(value, "links");
+  for (const key of Object.keys(links)) {
+    if (key !== "related" && key !== "episode") fail("FMP_INVALID_LINKS", `links.${key} is not a link this version records`);
+  }
+  if (links.related === undefined && links.episode === undefined) {
+    fail("FMP_INVALID_LINKS", "links must relate a memory or name an episode; omit it for an unlinked memory");
+  }
+  if (links.related !== undefined) {
+    if (!Array.isArray(links.related) || links.related.length === 0 || links.related.length > MAX_LINKED_MEMORIES) {
+      fail("FMP_INVALID_LINKS", `links.related must be a non-empty array of at most ${MAX_LINKED_MEMORIES} digests`);
+    }
+    if (links.related.some((entry) => !isDigest(entry))) fail("FMP_INVALID_LINKS", "links.related must hold artifact digests");
+    if (new Set(links.related).size !== links.related.length) fail("FMP_INVALID_LINKS", "links.related names a memory more than once");
+  }
+  if (links.episode !== undefined && (typeof links.episode !== "string" || !EPISODE_ID.test(links.episode))) {
+    fail("FMP_INVALID_LINKS", "links.episode must be an id of 1 to 128 letters, digits, dots, underscores, colons or hyphens");
+  }
+}
+
 /** FMP v1.2: a memory's environmental scope, when it has one. One binding per kind; dependency names unique. */
 export function assertFamiliarMemoryScopeV1(value: unknown): void {
   const scope = asRecord(value, "scope");
@@ -245,6 +269,7 @@ export function assertFamiliarMemoryArtifactV1(value: unknown): asserts value is
   isoUtc(record, "createdAt");
   optionalIsoUtc(record, "expiresAt");
   if (record.scope !== undefined) assertFamiliarMemoryScopeV1(record.scope);
+  if (record.links !== undefined) assertFamiliarMemoryLinksV1(record.links);
 }
 
 function validateMutationShape(receipt: MemoryMutationReceiptV1): void {

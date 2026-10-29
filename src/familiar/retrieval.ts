@@ -131,6 +131,9 @@ export async function retrieveFamiliarMemories(
   for (const memory of rows) {
     if (memory.tenantId !== request.tenantId || memory.familiarId !== request.familiarId) continue;
     if (memory.identityEpoch !== request.identityEpoch) continue;
+    // Current recall never includes a superseded fact, whatever support states the caller allows and however well it
+    // would rank: its correction is what is current (ArobiMemBench MEM-004).
+    if (memory.supportState === "SUPERSEDED" || memory.supersededBy !== undefined) continue;
     if (!supportStates.has(memory.supportState)) continue;
     if (!trustClasses.has(memory.trustClass)) continue;
     if (memoryClasses && !memoryClasses.has(memory.memoryClass)) continue;

@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   FamiliarCanonicalizationError,
-  FamiliarValidationError,
   assertContextUseReceiptV1,
   assertFamiliarCapsuleV1,
   assertFamiliarMemoryArtifactV1,
@@ -88,7 +87,7 @@ describe("FMP memory authority boundary", () => {
   it("rejects a memory that attempts to mint live authority", () => {
     const value = memory({ mayAuthorize: true });
     expect(() => assertFamiliarMemoryArtifactV1(value)).toThrowError(
-      expect.objectContaining<FamiliarValidationError>({ code: "FMP_MEMORY_CANNOT_AUTHORIZE" }),
+      expect.objectContaining({ code: "FMP_MEMORY_CANNOT_AUTHORIZE" }),
     );
   });
 
@@ -99,10 +98,10 @@ describe("FMP memory authority boundary", () => {
 
   it("rejects malformed digests and duplicate provenance", () => {
     expect(() => assertFamiliarMemoryArtifactV1(memory({ contentDigest: "sha256:BAD" })))
-      .toThrowError(expect.objectContaining<FamiliarValidationError>({ code: "FMP_INVALID_DIGEST" }));
+      .toThrowError(expect.objectContaining({ code: "FMP_INVALID_DIGEST" }));
 
     expect(() => assertFamiliarMemoryArtifactV1(memory({ sourceArtifacts: [D3, D3] })))
-      .toThrowError(expect.objectContaining<FamiliarValidationError>({ code: "FMP_DUPLICATE_DIGEST" }));
+      .toThrowError(expect.objectContaining({ code: "FMP_DUPLICATE_DIGEST" }));
   });
 });
 
@@ -145,7 +144,7 @@ describe("FMP mutation lineage", () => {
       createdAt: NOW,
     };
     expect(() => assertMemoryMutationReceiptV1(receipt))
-      .toThrowError(expect.objectContaining<FamiliarValidationError>({ code: "FMP_INVALID_MUTATION" }));
+      .toThrowError(expect.objectContaining({ code: "FMP_INVALID_MUTATION" }));
   });
 
   it("requires at least two sources for MERGE", () => {
@@ -166,18 +165,18 @@ describe("FMP mutation lineage", () => {
       createdAt: NOW,
     };
     expect(() => assertMemoryMutationReceiptV1(receipt))
-      .toThrowError(expect.objectContaining<FamiliarValidationError>({ code: "FMP_INVALID_MUTATION" }));
+      .toThrowError(expect.objectContaining({ code: "FMP_INVALID_MUTATION" }));
   });
 
   it("rejects silent cross-tenant, cross-familiar, or cross-epoch transitions", () => {
     const before = memory() as unknown as FamiliarMemoryArtifactV1;
 
     expect(() => assertSameFamiliarScope(before, memory({ tenantId: "tenant-2" }) as unknown as FamiliarMemoryArtifactV1))
-      .toThrowError(expect.objectContaining<FamiliarValidationError>({ code: "FMP_SCOPE_MISMATCH" }));
+      .toThrowError(expect.objectContaining({ code: "FMP_SCOPE_MISMATCH" }));
     expect(() => assertSameFamiliarScope(before, memory({ familiarId: "familiar-2" }) as unknown as FamiliarMemoryArtifactV1))
-      .toThrowError(expect.objectContaining<FamiliarValidationError>({ code: "FMP_SCOPE_MISMATCH" }));
+      .toThrowError(expect.objectContaining({ code: "FMP_SCOPE_MISMATCH" }));
     expect(() => assertSameFamiliarScope(before, memory({ identityEpoch: 2 }) as unknown as FamiliarMemoryArtifactV1))
-      .toThrowError(expect.objectContaining<FamiliarValidationError>({ code: "FMP_SCOPE_MISMATCH" }));
+      .toThrowError(expect.objectContaining({ code: "FMP_SCOPE_MISMATCH" }));
   });
 });
 
@@ -208,12 +207,12 @@ describe("FMP context-use honesty", () => {
 
   it("rejects claiming reliance on memory that was never opened", () => {
     expect(() => assertContextUseReceiptV1(receipt({ reliedUpon: [D4] })))
-      .toThrowError(expect.objectContaining<FamiliarValidationError>({ code: "FMP_CONTEXT_LINEAGE" }));
+      .toThrowError(expect.objectContaining({ code: "FMP_CONTEXT_LINEAGE" }));
   });
 
   it("rejects claiming an opened memory that was never retrieved", () => {
     expect(() => assertContextUseReceiptV1(receipt({ opened: [D5] })))
-      .toThrowError(expect.objectContaining<FamiliarValidationError>({ code: "FMP_CONTEXT_LINEAGE" }));
+      .toThrowError(expect.objectContaining({ code: "FMP_CONTEXT_LINEAGE" }));
   });
 });
 
@@ -243,6 +242,13 @@ describe("FMP capsule portability", () => {
 
   it("rejects an imported capsule that claims authority is portable", () => {
     expect(() => assertFamiliarCapsuleV1(capsule(true)))
-      .toThrowError(expect.objectContaining<FamiliarValidationError>({ code: "FMP_AUTHORITY_NOT_PORTABLE" }));
+      .toThrowError(expect.objectContaining({ code: "FMP_AUTHORITY_NOT_PORTABLE" }));
+  });
+
+  it("rejects an imported capsule that adds an approval, grant or any field v1 does not have (MEM-007)", () => {
+    for (const extra of [{ approvalRef: "approval:1" }, { grantId: "grant-1" }, { effectWarrant: D1 }, { authorityEpoch: 9 }]) {
+      expect(() => assertFamiliarCapsuleV1({ ...capsule(false), ...extra }))
+        .toThrowError(expect.objectContaining({ code: "FMP_CAPSULE_UNKNOWN_FIELD" }));
+    }
   });
 });

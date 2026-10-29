@@ -385,8 +385,20 @@ export function assertMemoryTombstoneReceiptV1(value: unknown): asserts value is
   }
 }
 
+/** Every field a v1 capsule has. An import carries identity and memory, so anything else is refused (ArobiMemBench MEM-007). */
+const CAPSULE_FIELDS: ReadonlySet<string> = new Set([
+  "kind", "version", "capsuleId", "familiarId", "tenantId", "identityEpoch", "manifestDigest", "continuityDigest",
+  "selectedMemoryDigests", "selectedSkillDigests", "privacyConstraintDigests", "provenanceDigests", "authorityPortable",
+  "createdAt",
+]);
+
 export function assertFamiliarCapsuleV1(value: unknown): asserts value is FamiliarCapsuleV1 {
   const record = asRecord(value, "FamiliarCapsuleV1");
+  for (const key of Object.keys(record)) {
+    if (!CAPSULE_FIELDS.has(key)) {
+      fail("FMP_CAPSULE_UNKNOWN_FIELD", `capsule.${key} is not a v1 capsule field; an import never carries an approval, grant or other authority`);
+    }
+  }
   assertLiteral(record, "kind", "arobi.familiar-capsule");
   assertLiteral(record, "version", 1);
   nonEmptyString(record, "capsuleId");

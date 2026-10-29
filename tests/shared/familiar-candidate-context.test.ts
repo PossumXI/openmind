@@ -33,7 +33,7 @@ describe("FMP captured-event candidates", () => {
     expect(candidate.originDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
   });
 
-  it("marks assistant content as derived and tool observations as observed", () => {
+  it("marks assistant content as derived, and tool output as external untrusted until a trusted origin promotes it", () => {
     expect(buildFamiliarMemoryCandidate({
       tenantId: "tenant-1",
       familiarId: "familiar-1",
@@ -46,7 +46,7 @@ describe("FMP captured-event candidates", () => {
       familiarId: "familiar-1",
       identityEpoch: 1,
       event: { id: "t", type: "tool_call", timestamp: NOW, tool_name: "search", tool_response: "result" },
-    }).trustClass).toBe("OBSERVED");
+    }).trustClass).toBe("EXTERNAL_UNTRUSTED");
   });
 });
 

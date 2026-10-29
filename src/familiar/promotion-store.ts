@@ -201,10 +201,12 @@ export function assertFamiliarPromotionCommitV1(
   ) {
     throw new Error("FMP promotion commit mutation must bind exactly the promoted candidate digest");
   }
-  if (!memory.sourceArtifacts.includes(commit.sourceEventDigest)) {
+  // Checked as a digest with the other digest fields above.
+  const sourceEventDigest = commit.sourceEventDigest as Digest;
+  if (!memory.sourceArtifacts.includes(sourceEventDigest)) {
     throw new Error("FMP promotion commit sourceEventDigest is not preserved in memory source artifacts");
   }
-  if (!mutation.evidenceDigests.includes(commit.sourceEventDigest)) {
+  if (!mutation.evidenceDigests.includes(sourceEventDigest)) {
     throw new Error("FMP promotion commit sourceEventDigest is not preserved in mutation evidence");
   }
 }

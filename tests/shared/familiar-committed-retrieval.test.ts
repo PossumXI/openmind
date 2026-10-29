@@ -102,8 +102,18 @@ function database() {
       tables.set(deletion[1], []);
       return [];
     }
-    const select = statement.match(/^SELECT .+ FROM "([^"]+)" /s);
-    if (select) return [...(tables.get(select[1]) ?? [])];
+    // Honour the equality filters and LIMIT a real store applies: the vault reads one commit's payload by its key and
+    // treats more than one matching row as INCONCLUSIVE, so returning the whole table would fail every open.
+    const select = statement.match(/^SELECT .+? FROM "([^"]+)"(?: WHERE (.+?))?(?: ORDER BY .+?)?(?: LIMIT (\d+))?$/s);
+    if (select) {
+      let rows = [...(tables.get(select[1]) ?? [])];
+      if (select[2]) {
+        const conditions = [...select[2].matchAll(/(\w+) = ('(?:[^']|'')*'|-?\d+)/g)]
+          .map(([, column, raw]) => [column, raw.startsWith("'") ? raw.slice(1, -1).replaceAll("''", "'") : raw] as const);
+        rows = rows.filter((row) => conditions.every(([column, value]) => String(row[column]) === value));
+      }
+      return select[3] ? rows.slice(0, Number(select[3])) : rows;
+    }
     return [];
   };
   return { query, tables };
@@ -227,5 +237,25 @@ describe("FMP committed protected recall", () => {
 
     const results = await retrieveCommittedFamiliarMemories({ commits, forgets, vault, request });
     expect(results).toEqual([]);
+  });
+
+  it("refuses two live promotions of one memory instead of letting the later one win (MEM-010)", async () => {
+    const db = database();
+    const { vault, commits, forgets } = stores(db.query);
+    // Two branches promote different content under the same memory id.
+    const branchA = plan("shared", "the deploy window is Tuesday");
+    const sameId = buildFamiliarPromotionPlan({
+      candidate: buildFamiliarMemoryCandidate({
+        tenantId: "tenant-1", familiarId: "familiar-1", identityEpoch: 4,
+        event: { id: "event-other", type: "user_message", session_id: "session-1", timestamp: NOW, content: "the deploy window is Friday" },
+      }),
+      memoryId: "memory-shared", memoryClass: "PREFERENCE", originLabelDigest: D1, actorRef: "principal:operator-2",
+      reasonDigest: D2, policyEpoch: 3, createdAt: NOW,
+    });
+    await publishFamiliarPromotion({ plan: branchA, payload: "the deploy window is Tuesday", vault, commits });
+    await publishFamiliarPromotion({ plan: sameId, payload: "the deploy window is Friday", vault, commits });
+
+    await expect(retrieveCommittedFamiliarMemories({ commits, forgets, vault, request }))
+      .rejects.toThrow(/multiple live promotion commits for one memory id/);
   });
 });

@@ -133,4 +133,24 @@ describe("FMP scope-first retrieval", () => {
     expect(result.map((candidate) => candidate.memory.memoryId)).toEqual(["newer", "older"]);
     expect(result.every((candidate) => candidate.memory.mayAuthorize === false)).toBe(true);
   });
+
+  it("never lets a superseded fact outrank its correction, whatever the caller allows (MEM-004)", async () => {
+    const correction = memory({ memoryId: "deploy-window", revision: 2, contentDigest: `sha256:${"c".repeat(64)}` });
+    const correctionDigest = sha256DigestCanonical(correction);
+    // The old fact still says OBSERVED, but its correction names it; a second stale copy was marked SUPERSEDED.
+    const stale = memory({ memoryId: "deploy-window-old", contentDigest: `sha256:${"a".repeat(64)}`, supersededBy: correctionDigest });
+    const marked = memory({ memoryId: "deploy-window-older", contentDigest: `sha256:${"b".repeat(64)}`, supportState: "SUPERSEDED" });
+    const seenByRanker: string[] = [];
+    const result = await retrieveFamiliarMemories(
+      { async readCurrentMemories() { return [stale, marked, correction]; } },
+      { ...policy, allowedSupportStates: ["OBSERVED", "SUPERSEDED", "CORROBORATED"] },
+      (candidates) => {
+        seenByRanker.push(...candidates.map((candidate) => candidate.memory.memoryId));
+        // The stale facts would score highest; they must never get here.
+        return candidates.map((candidate) => ({ artifactDigest: candidate.artifactDigest, score: candidate.memory.memoryId === "deploy-window" ? 0.1 : 0.99 }));
+      },
+    );
+    expect(seenByRanker).toEqual(["deploy-window"]);
+    expect(result.map((candidate) => candidate.memory.memoryId)).toEqual(["deploy-window"]);
+  });
 });

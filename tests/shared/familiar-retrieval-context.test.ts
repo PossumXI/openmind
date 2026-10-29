@@ -35,10 +35,17 @@ function memory(overrides: Partial<FamiliarMemoryArtifactV1> = {}): FamiliarMemo
   };
 }
 
-function candidate(value: FamiliarMemoryArtifactV1 = memory()): FamiliarRetrievalResult {
+type PayloadState = { state: "AVAILABLE"; payload: unknown; contentDigest: typeof D1 } | { state: "UNAVAILABLE" | "INCONCLUSIVE"; reason: string };
+
+// Committed recall: the protected payload was opened and verified, so the memory may be recorded as opened or relied on.
+function candidate(
+  value: FamiliarMemoryArtifactV1 = memory(),
+  payload: PayloadState | null = { state: "AVAILABLE", payload: { text: "fixture" }, contentDigest: value.contentDigest },
+): FamiliarRetrievalResult & { payload?: PayloadState } {
   return {
     artifactDigest: sha256DigestCanonical(value),
     memory: value,
+    ...(payload ? { payload } : {}),
   };
 }
 
@@ -85,6 +92,20 @@ describe("FMP retrieval -> context-use evidence", () => {
     await expect(
       recordRetrievedContextUse(input({ rejectedOrConflicting: [D1] })),
     ).rejects.toThrow(/rejectedOrConflicting digest was not present/);
+  });
+
+  it("records a memory as opened or relied on only when its protected payload was verified AVAILABLE", async () => {
+    for (const payload of [null, { state: "UNAVAILABLE", reason: "erased" }, { state: "INCONCLUSIVE", reason: "vault timeout" }] as const) {
+      const held = candidate(memory(), payload);
+      await expect(recordRetrievedContextUse(input({ retrieved: [held], opened: [held.artifactDigest], reliedUpon: [] })))
+        .rejects.toThrow(/opened digest cannot be recorded because its protected payload was not verified AVAILABLE/);
+      await expect(recordRetrievedContextUse(input({ retrieved: [held], opened: [], reliedUpon: [held.artifactDigest] })))
+        .rejects.toThrow(/reliedUpon digest cannot be recorded because its protected payload was not verified AVAILABLE/);
+      // It is still recorded as retrieved: the receipt says it came back and was not used.
+      const recorded = await recordRetrievedContextUse(input({ retrieved: [held], opened: [], reliedUpon: [], rejectedOrConflicting: [] }));
+      expect(recorded.receipt.retrieved).toEqual([held.artifactDigest]);
+      expect(recorded.receipt.reliedUpon).toEqual([]);
+    }
   });
 
   it("rejects cross-tenant, cross-familiar, and stale-epoch retrieval candidates", async () => {

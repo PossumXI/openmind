@@ -68,7 +68,7 @@ describe("FMP candidate promotion plan", () => {
     expect(plan.mutation.nextDigest).toBe(plan.memoryDigest);
   });
 
-  it("does not upgrade an observed tool candidate beyond OBSERVED at promotion", () => {
+  it("does not upgrade a tool candidate at promotion: it stays external untrusted and only asserted", () => {
     const plan = buildFamiliarPromotionPlan({
       candidate: toolCandidate(),
       memoryId: "memory-observation",
@@ -79,8 +79,8 @@ describe("FMP candidate promotion plan", () => {
       createdAt: NOW,
     });
 
-    expect(plan.memory.trustClass).toBe("OBSERVED");
-    expect(plan.memory.supportState).toBe("OBSERVED");
+    expect(plan.memory.trustClass).toBe("EXTERNAL_UNTRUSTED");
+    expect(plan.memory.supportState).toBe("ASSERTED");
     expect(plan.memory.mayAuthorize).toBe(false);
   });
 

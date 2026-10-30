@@ -31,8 +31,14 @@ import { FamiliarValidationError, isDigest } from "./validate.js";
  *   surfaced, as a path. Where a second direction is nearly as strong (crossing fibres, the case the tensor model
  *   averages away and q-ball/DSI keep), the tract branches instead of choosing one.
  *
+ * - Compartments (diffusion basis spectrum imaging, DBSI, which separates a voxel's anisotropic fibre signal from its
+ *   isotropic cellular and free-water signal). Per memory: of the activation that flowed into it, the share that
+ *   arrived along provenance links (lineage, derivation, an explicit relation: the anisotropic compartment) and the
+ *   share that arrived through co-occurrence (a shared scope, the same episode: the isotropic compartment). It says
+ *   whether a memory surfaced because of where it came from or only because it sat near the turn's matches.
+ *
  * Deterministic: inputs are sorted by digest, arithmetic is rounded to six decimals, and the same graph, seeds and
- * profile always give the same activation, tracts and digest.
+ * profile always give the same activation, tracts, compartments and digest.
  */
 
 export const FAMILIAR_DIFFUSION_SCHEMA = "arobi.familiar-diffusion.v1" as const;
@@ -93,6 +99,20 @@ export interface FamiliarDiffusionTensorV1 {
   fa: number;
 }
 
+/** Provenance links: the anisotropic compartment. Every other direction is co-occurrence, the isotropic one. */
+export const FAMILIAR_DIFFUSION_ANISOTROPIC_DIRECTIONS: readonly FamiliarDiffusionDirection[] = Object.freeze(["LINEAGE", "DERIVATION", "RELATION"]);
+
+export interface FamiliarDiffusionCompartmentsV1 {
+  /** The turn matched this memory directly (a seed), with this strength; 0 when only spread reached it. */
+  seeded: number;
+  /** Activation that flowed into this memory from its neighbours over every step, in the seeds' units. */
+  received: number;
+  /** Of what it received, the share that arrived along provenance links; 0 when it received nothing. */
+  anisotropicShare: number;
+  /** Of what it received, the share that arrived through co-occurrence; 0 when it received nothing. */
+  isotropicShare: number;
+}
+
 export interface FamiliarDiffusionTractV1 {
   seed: Digest;
   path: Digest[];
@@ -108,6 +128,11 @@ export interface FamiliarDiffusionResultV1 {
   activation: Map<Digest, number>;
   tensors: Map<Digest, FamiliarDiffusionTensorV1>;
   tracts: FamiliarDiffusionTractV1[];
+  /**
+   * Per memory, where its activation came from. A report for people and evaluations, never an input to admission.
+   * It follows from the same graph, seeds and profile the digest commits, so the digest already determines it.
+   */
+  compartments: Map<Digest, FamiliarDiffusionCompartmentsV1>;
   /** Commits the inputs and the outputs, without memory content. */
   digest: Digest;
   /** The diffusion settings alone, so evidence can say which profile shaped a ranking. */
@@ -125,6 +150,7 @@ function round6(value: number): number {
 }
 
 const DIRECTION_SET = new Set<string>(FAMILIAR_DIFFUSION_DIRECTIONS);
+const ANISOTROPIC = new Set<FamiliarDiffusionDirection>(FAMILIAR_DIFFUSION_ANISOTROPIC_DIRECTIONS);
 
 /** Code-unit order: the same on every host, unlike localeCompare, so the digest never depends on collation. */
 function byCodeUnit(a: string, b: string): number {
@@ -235,12 +261,22 @@ export function diffuseFamiliarActivation(input: {
   const dt = degree > 0 ? Math.min(profile.maxStep, 1 / degree) : profile.maxStep;
   let activation = new Map<Digest, number>(nodes.map((node) => [node.digest, 0]));
   for (const [digest, strength] of seeds) activation.set(digest, strength);
+  // What flowed in along each compartment; only inflow counts, so a memory's own outflow never reads as a source.
+  const inflow = new Map<Digest, { anisotropic: number; isotropic: number }>(nodes.map((node) => [node.digest, { anisotropic: 0, isotropic: 0 }]));
   for (let step = 0; step < bValue; step += 1) {
     const next = new Map<Digest, number>();
     for (const node of nodes) {
       const own = activation.get(node.digest)!;
+      const received = inflow.get(node.digest)!;
       let flow = 0;
-      for (const link of links.get(node.digest)!) flow += link.conductance * (activation.get(link.to)! - own);
+      for (const link of links.get(node.digest)!) {
+        const delta = link.conductance * (activation.get(link.to)! - own);
+        flow += delta;
+        if (delta > 0) {
+          if (ANISOTROPIC.has(link.direction)) received.anisotropic += dt * delta;
+          else received.isotropic += dt * delta;
+        }
+      }
       next.set(node.digest, round6(own + dt * flow));
     }
     activation = next;
@@ -248,6 +284,19 @@ export function diffuseFamiliarActivation(input: {
   const peak = Math.max(0, ...activation.values());
   const normalized = new Map<Digest, number>();
   for (const node of nodes) normalized.set(node.digest, peak > 0 ? round6(activation.get(node.digest)! / peak) : 0);
+  const seededStrength = new Map<Digest, number>(seeds);
+  const compartments = new Map<Digest, FamiliarDiffusionCompartmentsV1>();
+  for (const node of nodes) {
+    const { anisotropic, isotropic } = inflow.get(node.digest)!;
+    const total = anisotropic + isotropic;
+    const anisotropicShare = total > 0 ? round6(anisotropic / total) : 0;
+    compartments.set(node.digest, {
+      seeded: seededStrength.get(node.digest) ?? 0,
+      received: round6(total),
+      anisotropicShare,
+      isotropicShare: total > 0 ? round6(1 - anisotropicShare) : 0,
+    });
+  }
 
   // Tractography along principal directions, branching at crossings.
   const tracts: FamiliarDiffusionTractV1[] = [];
@@ -289,7 +338,7 @@ export function diffuseFamiliarActivation(input: {
     tracts: tracts.map((tract) => [tract.seed, tract.path, tract.directions, tract.crossing]),
   });
   const profileDigest = sha256DomainDigestCanonical("arobi/familiar-diffusion-profile/v1", profile);
-  return { schema: FAMILIAR_DIFFUSION_SCHEMA, bValue, activation: normalized, tensors, tracts, digest, profileDigest, seedCount: seeds.length };
+  return { schema: FAMILIAR_DIFFUSION_SCHEMA, bValue, activation: normalized, tensors, tracts, compartments, digest, profileDigest, seedCount: seeds.length };
 }
 
 // ---------------------------------------------------------------------------------------------------------------

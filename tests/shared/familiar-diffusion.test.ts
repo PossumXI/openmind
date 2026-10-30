@@ -285,3 +285,39 @@ describe("FMP v1.3 links are validated with the memory", () => {
     }
   });
 });
+
+describe("familiar memory diffusion: compartments (DBSI)", () => {
+  it("separates activation that arrived along provenance from activation that arrived through co-occurrence", () => {
+    // d(1) is the turn's match. d(2) is built from it (lineage), d(3) shares its episode, d(4) is both.
+    const edges: FamiliarDiffusionEdgeV1[] = [
+      { from: d(2), to: d(1), direction: "LINEAGE" },
+      { from: d(1), to: d(3), direction: "EPISODE" },
+      { from: d(4), to: d(1), direction: "LINEAGE", weight: 0.5 },
+      { from: d(1), to: d(4), direction: "EPISODE", weight: 0.5 },
+    ];
+    const result = diffuseFamiliarActivation({ nodes: nodes(5), edges, seeds: new Map([[d(1), 1]]) });
+    const of = (n: number) => result.compartments.get(d(n))!;
+    expect(of(2)).toMatchObject({ seeded: 0, anisotropicShare: 1, isotropicShare: 0 });
+    expect(of(3)).toMatchObject({ seeded: 0, anisotropicShare: 0, isotropicShare: 1 });
+    expect(of(4).anisotropicShare).toBeGreaterThan(0.5);
+    expect(of(4).anisotropicShare).toBeLessThan(1);
+    expect(round(of(4).anisotropicShare + of(4).isotropicShare)).toBe(1);
+    // The match itself is seeded; a memory nothing reached received nothing and has no shares.
+    expect(of(1).seeded).toBe(1);
+    expect(of(5)).toEqual({ seeded: 0, received: 0, anisotropicShare: 0, isotropicShare: 0 });
+    for (const n of [2, 3, 4]) expect(of(n).received).toBeGreaterThan(0);
+  });
+
+  it("gives a barrier nothing, and stays out of the digest it already follows from", () => {
+    const edges: FamiliarDiffusionEdgeV1[] = [
+      { from: d(1), to: d(2), direction: "RELATION" },
+      { from: d(2), to: d(3), direction: "SCOPE" },
+    ];
+    const restricted = diffuseFamiliarActivation({ nodes: nodes(3, [2]), edges, seeds: new Map([[d(1), 1]]), bValue: 4 });
+    expect(restricted.compartments.get(d(2))!.received).toBe(0);
+    expect(restricted.compartments.get(d(3))!.received).toBe(0);
+    const again = diffuseFamiliarActivation({ nodes: nodes(3, [2]).reverse(), edges: [...edges].reverse(), seeds: new Map([[d(1), 1]]), bValue: 4 });
+    expect(again.digest).toBe(restricted.digest);
+    expect([...again.compartments.entries()].sort()).toEqual([...restricted.compartments.entries()].sort());
+  });
+});
